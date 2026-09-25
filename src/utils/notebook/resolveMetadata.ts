@@ -7,6 +7,8 @@ export interface MetadataResult {
 	frontmatter: Record<string, unknown>;
 	/** 正文从第几个单元格开始（首单元格被 YAML 消费时为 1） */
 	firstBodyCell: number;
+	/** 被消费的首单元格里 frontmatter 块之后的剩余正文；无 frontmatter 单元格时为 "" */
+	leadingMarkdown: string;
 }
 
 const STRING_FIELDS: Record<string, true> = {
@@ -100,16 +102,18 @@ export function resolveMetadata(
 ): MetadataResult {
 	let fromCell: Record<string, unknown> = {};
 	let firstBodyCell = 0;
+	let leadingMarkdown = "";
 
 	const first = doc.cells[0];
 	if (first && first.cell_type === "markdown") {
 		const source = toText(first.source);
 		if (source.startsWith("---")) {
 			try {
-				const { frontmatter } = parseFrontmatter(source);
+				const { frontmatter, content } = parseFrontmatter(source);
 				if (isRecord(frontmatter) && Object.keys(frontmatter).length > 0) {
 					fromCell = frontmatter;
 					firstBodyCell = 1;
+					leadingMarkdown = content.trim();
 				}
 			} catch (error) {
 				throw new NotebookError(
@@ -134,5 +138,5 @@ export function resolveMetadata(
 		validated.title = titleFromFileName(fileName);
 	}
 
-	return { frontmatter: validated, firstBodyCell };
+	return { frontmatter: validated, firstBodyCell, leadingMarkdown };
 }

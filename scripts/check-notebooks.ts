@@ -264,5 +264,50 @@ await checkAsync("YAML 损坏报错", async () => {
 	assert.throws(() => resolveMetadata(doc, "x.ipynb"), NotebookError);
 });
 
+await checkAsync(
+	"首单元格 YAML 之后的正文被保留为 leadingMarkdown",
+	async () => {
+		const doc = notebook({ blog: { published: "2026-01-02" } }, [
+			{
+				cell_type: "markdown",
+				source: [
+					"---\n",
+					'description: "d"\n',
+					"---\n",
+					"\n",
+					"这里是引言，不能被丢掉。\n",
+				],
+			},
+		]);
+		const result = resolveMetadata(doc, "x.ipynb");
+		assert.equal(result.leadingMarkdown, "这里是引言，不能被丢掉。");
+		assert.equal(result.firstBodyCell, 1);
+		assert.equal(result.frontmatter.description, "d");
+	},
+);
+
+await checkAsync("首单元格只有 YAML 时 leadingMarkdown 为空串", async () => {
+	const doc = notebook({ blog: { published: "2026-01-02" } }, [
+		{
+			cell_type: "markdown",
+			source: ["---\n", 'title: "t"\n', "---\n"],
+		},
+	]);
+	const result = resolveMetadata(doc, "x.ipynb");
+	assert.equal(result.leadingMarkdown, "");
+});
+
+await checkAsync(
+	"没有 frontmatter 单元格时 leadingMarkdown 为空串",
+	async () => {
+		const filled = notebook({ blog: { published: "2026-01-02" } }, [
+			{ cell_type: "markdown", source: ["# 直接是正文\n"] },
+		]);
+		assert.equal(resolveMetadata(filled, "x.ipynb").leadingMarkdown, "");
+		const empty = notebook({ blog: { published: "2026-01-02" } }, []);
+		assert.equal(resolveMetadata(empty, "x.ipynb").leadingMarkdown, "");
+	},
+);
+
 console.log(failures === 0 ? "\n全部通过" : `\n${failures} 项失败`);
 process.exit(failures === 0 ? 0 : 1);
