@@ -3,7 +3,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ansiToHtml, hasAnsi } from "../src/utils/notebook/ansi";
-import { NotebookError, parseNotebook } from "../src/utils/notebook/parseNotebook";
+import {
+	NotebookError,
+	parseNotebook,
+} from "../src/utils/notebook/parseNotebook";
 import { toText } from "../src/utils/notebook/text";
 
 let failures = 0;
@@ -18,7 +21,10 @@ function check(name: string, run: () => void): void {
 	}
 }
 
-async function checkAsync(name: string, run: () => Promise<void>): Promise<void> {
+async function checkAsync(
+	name: string,
+	run: () => Promise<void>,
+): Promise<void> {
 	try {
 		await run();
 		console.log(`  ok  ${name}`);
@@ -127,6 +133,28 @@ check("行数组拼接为字符串", () => {
 	assert.equal(toText("plain"), "plain");
 	assert.equal(toText(undefined), "");
 });
+check("toText 对任意输入都返回字符串", () => {
+	for (const input of [
+		{ a: 1 },
+		42,
+		true,
+		["a", "b"],
+		"s",
+		null,
+		undefined,
+		[],
+	]) {
+		assert.equal(typeof toText(input), "string");
+	}
+	assert.equal(toText({ a: 1 }), "");
+	assert.equal(toText(42), "");
+	assert.equal(toText(true), "");
+	assert.equal(toText(["a", "b"]), "ab");
+	assert.equal(toText("s"), "s");
+	assert.equal(toText(null), "");
+	assert.equal(toText(undefined), "");
+	assert.equal(toText([]), "");
+});
 
 section("parseNotebook");
 await checkAsync("合法 notebook 解析成功", async () => {
@@ -134,7 +162,11 @@ await checkAsync("合法 notebook 解析成功", async () => {
 	const file = path.join(dir, "ok.ipynb");
 	await fs.writeFile(
 		file,
-		JSON.stringify({ nbformat: 4, metadata: {}, cells: [{ cell_type: "markdown", source: ["hi"] }] }),
+		JSON.stringify({
+			nbformat: 4,
+			metadata: {},
+			cells: [{ cell_type: "markdown", source: ["hi"] }],
+		}),
 	);
 	const doc = await parseNotebook(file);
 	assert.equal(doc.cells.length, 1);
@@ -155,6 +187,19 @@ await checkAsync("cells 非数组报 NotebookError", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nb-"));
 	const file = path.join(dir, "bad.ipynb");
 	await fs.writeFile(file, JSON.stringify({ nbformat: 4, cells: {} }));
+	await assert.rejects(() => parseNotebook(file), NotebookError);
+});
+await checkAsync("读文件失败报 NotebookError", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nb-"));
+	const file = path.join(dir, "missing.ipynb");
+	await assert.rejects(() => parseNotebook(file), NotebookError);
+});
+await checkAsync("根节点非对象报 NotebookError", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nb-"));
+	const file = path.join(dir, "scalar.ipynb");
+	await fs.writeFile(file, JSON.stringify("x"));
+	await assert.rejects(() => parseNotebook(file), NotebookError);
+	await fs.writeFile(file, JSON.stringify([]));
 	await assert.rejects(() => parseNotebook(file), NotebookError);
 });
 

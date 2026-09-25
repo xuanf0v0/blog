@@ -12,7 +12,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export async function parseNotebook(filePath: string): Promise<NotebookDocument> {
+export async function parseNotebook(
+	filePath: string,
+): Promise<NotebookDocument> {
 	let raw: string;
 	try {
 		raw = await fs.readFile(filePath, "utf-8");
@@ -36,7 +38,9 @@ export async function parseNotebook(filePath: string): Promise<NotebookDocument>
 	if (!Array.isArray(parsed.cells)) {
 		throw new NotebookError("cells 字段缺失或不是数组");
 	}
-	const cells = parsed.cells.filter((cell): cell is NotebookCell => isRecord(cell));
+	const cells = parsed.cells.filter((cell): cell is NotebookCell =>
+		isRecord(cell),
+	);
 
 	return {
 		nbformat: parsed.nbformat,
