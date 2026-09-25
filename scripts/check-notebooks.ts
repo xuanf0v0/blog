@@ -11,6 +11,7 @@ import {
 import { convertNotebook } from "../src/utils/notebook/convertNotebook";
 import { writeAsset } from "../src/utils/notebook/extractAssets";
 import { fenced } from "../src/utils/notebook/fence";
+import { generateNotebooks } from "../src/utils/notebook/generate";
 import type { OutputContext } from "../src/utils/notebook/outputToMarkdown";
 import { outputToMarkdown } from "../src/utils/notebook/outputToMarkdown";
 import {
@@ -943,6 +944,198 @@ await checkAsync(
 		);
 	},
 );
+
+section("generateNotebooks");
+const writeNotebook = async (file: string, cells: unknown[]): Promise<void> => {
+	await fs.mkdir(path.dirname(file), { recursive: true });
+	await fs.writeFile(
+		file,
+		JSON.stringify({ nbformat: 4, metadata: {}, cells }),
+	);
+};
+
+await checkAsync("生成同名 md 并维护 .gitignore", async () => {
+	const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+	const assets = path.join(posts, "..", "assets-out");
+	await writeNotebook(path.join(posts, "a.ipynb"), [
+		{
+			cell_type: "markdown",
+			source: ["---\n", 'title: "A"\n', "published: 2026-01-01\n", "---\n"],
+		},
+	]);
+	const report = await generateNotebooks({
+		postsDir: posts,
+		assetsDir: assets,
+	});
+	assert.deepEqual(report.generated, ["a.md"]);
+	assert.deepEqual(report.errors, []);
+	const ignore = await fs.readFile(path.join(posts, ".gitignore"), "utf-8");
+	assert.match(ignore, /^# 自动生成/);
+	assert.match(ignore, /a\.md/);
+});
+
+await checkAsync("内容未变时不重写文件（mtime 不变）", async () => {
+	const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+	const assets = path.join(posts, "..", "assets-out");
+	await writeNotebook(path.join(posts, "b.ipynb"), [
+		{
+			cell_type: "markdown",
+			source: ["---\n", 'title: "B"\n', "published: 2026-01-01\n", "---\n"],
+		},
+	]);
+	await generateNotebooks({ postsDir: posts, assetsDir: assets });
+	const target = path.join(posts, "b.md");
+	const before = (await fs.stat(target)).mtimeMs;
+	await delay(20);
+	await generateNotebooks({ postsDir: posts, assetsDir: assets });
+	assert.equal((await fs.stat(target)).mtimeMs, before);
+});
+
+await checkAsync("notebook 删除后生成的 md 被清理", async () => {
+	const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+	const assets = path.join(posts, "..", "assets-out");
+	const ipynb = path.join(posts, "c.ipynb");
+	await writeNotebook(ipynb, [
+		{
+			cell_type: "markdown",
+			source: ["---\n", 'title: "C"\n', "published: 2026-01-01\n", "---\n"],
+		},
+	]);
+	await generateNotebooks({ postsDir: posts, assetsDir: assets });
+	await fs.rm(ipynb);
+	await generateNotebooks({ postsDir: posts, assetsDir: assets });
+	// 产物为空时 .gitignore 也被删除，目录应当彻底空掉
+	assert.deepEqual(await fs.readdir(posts), []);
+});
+
+await checkAsync("与手写 md 撞名时报错并跳过", async () => {
+	const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+	const assets = path.join(posts, "..", "assets-out");
+	await fs.writeFile(path.join(posts, "d.md"), "# 手写内容");
+	await writeNotebook(path.join(posts, "d.ipynb"), [
+		{
+			cell_type: "markdown",
+			source: ["---\n", 'title: "D"\n', "published: 2026-01-01\n", "---\n"],
+		},
+	]);
+	const report = await generateNotebooks({
+		postsDir: posts,
+		assetsDir: assets,
+	});
+	assert.equal(report.errors.length, 1);
+	assert.equal(
+		await fs.readFile(path.join(posts, "d.md"), "utf-8"),
+		"# 手写内容",
+	);
+});
+
+await checkAsync("下划线开头的 notebook 被拒绝", async () => {
+	const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+	const assets = path.join(posts, "..", "assets-out");
+	await writeNotebook(path.join(posts, "_hidden.ipynb"), []);
+	const report = await generateNotebooks({
+		postsDir: posts,
+		assetsDir: assets,
+	});
+	assert.equal(report.errors.length, 1);
+	assert.match(report.errors[0].message, /下划线/);
+});
+
+await checkAsync("坏 notebook 不影响其他文件", async () => {
+	const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+	const assets = path.join(posts, "..", "assets-out");
+	await fs.writeFile(path.join(posts, "broken.ipynb"), "{ not json");
+	await writeNotebook(path.join(posts, "good.ipynb"), [
+		{
+			cell_type: "markdown",
+			source: ["---\n", 'title: "G"\n', "published: 2026-01-01\n", "---\n"],
+		},
+	]);
+	const report = await generateNotebooks({
+		postsDir: posts,
+		assetsDir: assets,
+	});
+	assert.equal(report.errors.length, 1);
+	assert.deepEqual(report.generated, ["good.md"]);
+});
+
+await checkAsync(
+	"嵌套 notebook：首行标记写相对路径，.gitignore 逐行锚定",
+	async () => {
+		const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+		const assets = path.join(posts, "..", "assets-out");
+		await writeNotebook(path.join(posts, "sub", "deep", "n.ipynb"), [
+			{
+				cell_type: "markdown",
+				source: ["---\n", 'title: "N"\n', "published: 2026-01-01\n", "---\n"],
+			},
+		]);
+		const report = await generateNotebooks({
+			postsDir: posts,
+			assetsDir: assets,
+		});
+		assert.deepEqual(report.generated, ["sub/deep/n.md"]);
+		const md = await fs.readFile(
+			path.join(posts, "sub", "deep", "n.md"),
+			"utf-8",
+		);
+		// 标记是唯一的来源凭据：必须在首行，且用相对 postsDir 的 posix 路径
+		assert.equal(
+			md.split("\n")[0],
+			"<!-- generated-from-notebook: sub/deep/n.ipynb -->",
+		);
+		const ignoreLines = (
+			await fs.readFile(path.join(posts, ".gitignore"), "utf-8")
+		).split("\n");
+		assert.deepEqual(
+			ignoreLines.filter((line) => line.startsWith("/")),
+			["/sub/deep/n.md"],
+		);
+		assert.ok(
+			ignoreLines.every(
+				(line) => line === "" || line.startsWith("#") || line.startsWith("/"),
+			),
+		);
+	},
+);
+
+await checkAsync("手写 md 不会被当成孤儿清理", async () => {
+	const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+	const assets = path.join(posts, "..", "assets-out");
+	await fs.writeFile(path.join(posts, "manual.md"), "# 我手写的");
+	await writeNotebook(path.join(posts, "m.ipynb"), [
+		{
+			cell_type: "markdown",
+			source: ["---\n", 'title: "M"\n', "published: 2026-01-01\n", "---\n"],
+		},
+	]);
+	const report = await generateNotebooks({
+		postsDir: posts,
+		assetsDir: assets,
+	});
+	assert.deepEqual(report.generated, ["m.md"]);
+	assert.equal(
+		await fs.readFile(path.join(posts, "manual.md"), "utf-8"),
+		"# 我手写的",
+	);
+});
+
+await checkAsync(".gitignore 内容不变时不重写", async () => {
+	const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+	const assets = path.join(posts, "..", "assets-out");
+	await writeNotebook(path.join(posts, "g.ipynb"), [
+		{
+			cell_type: "markdown",
+			source: ["---\n", 'title: "G"\n', "published: 2026-01-01\n", "---\n"],
+		},
+	]);
+	await generateNotebooks({ postsDir: posts, assetsDir: assets });
+	const ignorePath = path.join(posts, ".gitignore");
+	const before = (await fs.stat(ignorePath)).mtimeMs;
+	await delay(20);
+	await generateNotebooks({ postsDir: posts, assetsDir: assets });
+	assert.equal((await fs.stat(ignorePath)).mtimeMs, before);
+});
 
 console.log(failures === 0 ? "\n全部通过" : `\n${failures} 项失败`);
 process.exit(failures === 0 ? 0 : 1);
