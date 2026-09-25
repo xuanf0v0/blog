@@ -3,7 +3,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import { parseFrontmatter } from "@astrojs/markdown-remark";
+import type { LoaderContext } from "astro/loaders";
 import { notebookPosts } from "../src/loaders/notebook-posts";
 import { ansiToHtml, hasAnsi } from "../src/utils/notebook/ansi";
 import {
@@ -1212,6 +1214,88 @@ await checkAsync(
 		const { frontmatter } = parseFrontmatter(generated);
 		assert.equal(frontmatter.title, "E");
 		assert.ok(frontmatter.published instanceof Date);
+	},
+);
+
+section("dev watcher");
+await checkAsync(
+	"同一 watcher 只注册一次，只理会 .ipynb，连发的变动合并成一轮生成",
+	async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "nb-watch-"));
+		const posts = path.join(root, "posts");
+		await fs.mkdir(posts, { recursive: true });
+		// 最小假 watcher：只关心 loader 怎么挂监听、怎么反应
+		const handlers: Record<string, Array<(file: string) => void>> = {};
+		const watcher = {
+			add: (): void => {},
+			on: (event: string, handler: (file: string) => void): void => {
+				handlers[event] = [...(handlers[event] ?? []), handler];
+			},
+		};
+		const emit = (event: string, file: string): void => {
+			for (const handler of handlers[event] ?? []) handler(file);
+		};
+		const warnings: string[] = [];
+		const context = {
+			collection: "posts",
+			store: { keys: (): string[] => [] },
+			meta: {},
+			logger: {
+				warn: (message: string): void => void warnings.push(message),
+				error: (): void => {},
+			},
+			config: { root: pathToFileURL(`${root}/`) },
+			parseData: async (props: unknown): Promise<unknown> => props,
+			generateDigest: (): string => "digest",
+			watcher,
+		} as unknown as LoaderContext;
+		const loader = notebookPosts({
+			base: posts,
+			assetsDir: path.join(root, "assets"),
+		});
+		// 生成的轮数用「坏 notebook 每轮报一次错」来数：告警条数 == 生成轮数
+		const runs = (notebook: string): number =>
+			warnings.filter((message) => message.startsWith(`${notebook}:`)).length;
+		const badCells = [
+			{ cell_type: "markdown", source: ["没有 frontmatter 的正文\n"] },
+		];
+		await writeNotebook(path.join(posts, "seed.ipynb"), badCells);
+
+		// load 每轮内容同步都会跑：三轮之后监听器仍应只有一套
+		await loader.load(context);
+		await loader.load(context);
+		await loader.load(context);
+		assert.equal(handlers.change?.length, 1);
+		assert.equal(handlers.add?.length, 1);
+		assert.equal(handlers.unlink?.length, 1);
+		assert.equal(runs("seed.ipynb"), 3, "每轮 load 应各生成一次");
+		assert.deepEqual(await fs.readdir(posts), ["seed.ipynb"]);
+
+		// 非 .ipynb 的变动不该触发重新生成
+		await fs.writeFile(path.join(posts, "notes.txt"), "x");
+		emit("change", path.join(posts, "notes.txt"));
+		await delay(300);
+		assert.equal(runs("seed.ipynb"), 3, "非 .ipynb 的变动不该触发生成");
+		assert.deepEqual((await fs.readdir(posts)).sort(), [
+			"notes.txt",
+			"seed.ipynb",
+		]);
+
+		// 连发三次变动应合并成一轮生成（与大小写无关地识别扩展名）
+		const bad = path.join(posts, "bad.ipynb");
+		await writeNotebook(bad, badCells);
+		emit("add", bad);
+		await delay(20);
+		emit("change", path.join(posts, "bad.IPYNB"));
+		await delay(20);
+		emit("change", bad);
+		await delay(600);
+		assert.equal(
+			runs("bad.ipynb"),
+			1,
+			`连发三次变动应合并成一轮生成，实际 ${runs("bad.ipynb")} 轮：${warnings.join(" | ")}`,
+		);
+		await fs.rm(root, { recursive: true, force: true });
 	},
 );
 
