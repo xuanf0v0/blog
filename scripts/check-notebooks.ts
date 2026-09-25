@@ -1354,6 +1354,124 @@ await checkAsync("键含冒号的 frontmatter 产出能被 Astro 解析", async 
 	assert.equal(frontmatter.published instanceof Date, true);
 });
 
+// 145 字节的长非 ASCII 路径：标记行远超旧 120 字节窗口留给路径的 89 字节余量，
+// 窗口一旦切在多字节字符中间，toString("utf-8") 就会在末尾补 U+FFFD
+const LONG_NOTEBOOK =
+	"数据分析/非常长的中文目录名称第一层/非常长的中文目录名称第二层/非常长的中文目录名称第三层/report.ipynb";
+
+await checkAsync(
+	"长非 ASCII 路径的产物不被当成孤儿删除（窗口必须装下整行标记）",
+	async () => {
+		const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+		const assets = path.join(posts, "..", "assets-out");
+		await writeNotebook(path.join(posts, LONG_NOTEBOOK), [
+			{
+				cell_type: "markdown",
+				source: [
+					"---\n",
+					'title: "长路径"\n',
+					"published: 2026-01-01\n",
+					"---\n",
+				],
+			},
+		]);
+		const report = await generateNotebooks({
+			postsDir: posts,
+			assetsDir: assets,
+		});
+		assert.deepEqual(report.errors, []);
+		assert.deepEqual(report.generated, [
+			LONG_NOTEBOOK.replace(/\.ipynb$/, ".md"),
+		]);
+		// report.generated 与磁盘必须一致：旧实现在这里声称生成成功、文件却已被删
+		assert.deepEqual(
+			(await fs.readdir(posts, { recursive: true })).filter((file) =>
+				file.endsWith(".md"),
+			),
+			report.generated,
+		);
+		assert.match(
+			await fs.readFile(path.join(posts, report.generated[0]), "utf-8"),
+			/^---\n# generated-from-notebook: 数据分析\//,
+		);
+	},
+);
+
+await checkAsync("长路径 notebook 本轮失败时旧产物照旧被清掉", async () => {
+	const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+	const assets = path.join(posts, "..", "assets-out");
+	await writeNotebook(path.join(posts, LONG_NOTEBOOK), [
+		{
+			cell_type: "markdown",
+			source: [
+				"---\n",
+				'title: "长路径"\n',
+				"published: 2026-01-01\n",
+				"---\n",
+			],
+		},
+	]);
+	const first = await generateNotebooks({ postsDir: posts, assetsDir: assets });
+	assert.equal(first.generated.length, 1);
+	// 同一路径的 notebook 变成坏 JSON：本轮报错，旧产物按既有语义清掉
+	// （靠 failed.has(记录里的 notebook) —— 长路径下标记必须被完整读出来才命中）
+	await fs.writeFile(path.join(posts, LONG_NOTEBOOK), "{ not json");
+	const second = await generateNotebooks({
+		postsDir: posts,
+		assetsDir: assets,
+	});
+	assert.equal(second.errors.length, 1);
+	assert.equal(second.errors[0].file, LONG_NOTEBOOK);
+	assert.deepEqual(second.generated, []);
+	assert.deepEqual(
+		(await fs.readdir(posts, { recursive: true })).filter((file) =>
+			file.endsWith(".md"),
+		),
+		[],
+	);
+});
+
+await checkAsync("标记行读不完整时保守保留并告警，绝不删除", async () => {
+	const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+	const assets = path.join(posts, "..", "assets-out");
+	// 标记行比读取窗口还长：来源不明 → 一律保留（宁可留下陌生文件也不误删）
+	const overlong = `---\n# generated-from-notebook: ${"a".repeat(5000)}.ipynb\ntitle: 手写\n---\n`;
+	await fs.writeFile(path.join(posts, "overlong.md"), overlong);
+	const report = await generateNotebooks({
+		postsDir: posts,
+		assetsDir: assets,
+	});
+	assert.deepEqual(report.generated, []);
+	assert.equal(
+		await fs.readFile(path.join(posts, "overlong.md"), "utf-8"),
+		overlong,
+	);
+	assert.equal(report.warnings.length, 1);
+	assert.match(report.warnings[0], /超出 \d+ 字节读取窗口/);
+});
+
+await checkAsync("标记行读不完整的同名目标不被覆写", async () => {
+	const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+	const assets = path.join(posts, "..", "assets-out");
+	// 来源不明的目标对撞名保护也是「不确定」：按用户手写的处理，绝不覆写
+	const overlong = `---\n# generated-from-notebook: ${"a".repeat(5000)}.ipynb\ntitle: 手写\n---\n`;
+	await fs.writeFile(path.join(posts, "w.md"), overlong);
+	await writeNotebook(path.join(posts, "w.ipynb"), [
+		{
+			cell_type: "markdown",
+			source: ["---\n", 'title: "W"\n', "published: 2026-01-01\n", "---\n"],
+		},
+	]);
+	const report = await generateNotebooks({
+		postsDir: posts,
+		assetsDir: assets,
+	});
+	assert.deepEqual(report.generated, []);
+	assert.equal(report.errors.length, 1);
+	assert.match(report.errors[0].message, /已存在且不是生成的/);
+	assert.equal(await fs.readFile(path.join(posts, "w.md"), "utf-8"), overlong);
+});
+
 await checkAsync(".gitignore 内容不变时不重写", async () => {
 	const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
 	const assets = path.join(posts, "..", "assets-out");

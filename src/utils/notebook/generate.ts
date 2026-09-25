@@ -29,8 +29,13 @@ const MARKER = "# generated-from-notebook:";
 /** 标记行前缀：写入与识别共用，保证两侧判据永远一致 */
 const MARKER_LINE = `${MARKER} `;
 const YAML_FENCE = "---\n";
-/** 短读窗口：覆盖 `---`、标记行与常见长度的 notebook 路径 */
-const HEAD_LENGTH = 120;
+/**
+ * 头部读取窗口。必须一次装下**整行**标记（`---` + 前缀 + notebook 相对路径）：
+ * 窗口若切在 UTF-8 多字节字符中间，`toString("utf-8")` 会在末尾产出 U+FFFD，
+ * 标记里的路径就再也对不上，刚生成的产物会被当成孤儿删掉。4096 字节覆盖
+ * 操作系统的路径上限，中文等长路径不再有截断风险。
+ */
+const HEAD_LENGTH = 4096;
 const GITIGNORE_FILE = ".gitignore";
 const IGNORE_HEADER = [
 	"# 自动生成，请勿手改 —— 由 src/utils/notebook/generate.ts 维护",
@@ -56,15 +61,18 @@ async function readHead(filePath: string): Promise<string | null> {
 
 /** 产物标记里记录的所有权信息 */
 interface Owner {
-	/** 标记记录的来源 notebook，相对 postsDir 的 posix 路径 */
-	notebook: string;
-	/** 标记行没读到换行：路径很可能被短读窗口截断，只能按前缀比对 */
-	truncated: boolean;
+	/**
+	 * 标记记录的来源 notebook（相对 postsDir 的 posix 路径）。
+	 * 窗口里读不到完整标记行时为 null —— 来源不明，既不删也不覆写。
+	 */
+	notebook: string | null;
 }
 
-interface GeneratedFile extends Owner {
+interface GeneratedFile {
 	/** 相对 postsDir 的 posix 路径 */
 	file: string;
+	/** 来源 notebook：只在完整读到标记行时才进这个集合 */
+	notebook: string;
 }
 
 /**
@@ -79,18 +87,30 @@ function readOwner(head: string | null): Owner | null {
 	}
 	const rest = head.slice(YAML_FENCE.length + MARKER_LINE.length);
 	const end = rest.indexOf("\n");
-	return end === -1
-		? { notebook: rest, truncated: true }
-		: { notebook: rest.slice(0, end), truncated: false };
+	return { notebook: end === -1 ? null : rest.slice(0, end) };
 }
 
-/** 找出目录下所有由生成器产出的 md（靠 frontmatter 首行标记识别，不依赖任何清单） */
-async function findGeneratedFiles(postsDir: string): Promise<GeneratedFile[]> {
+/**
+ * 找出目录下所有由生成器产出的 md（靠 frontmatter 首行标记识别，不依赖任何清单）。
+ * 标记行读不完整的候选**不入集合**：集合外的文件不会被孤儿清理碰到，宁可留下一个
+ * 陌生文件，也不在来源不明时删掉用户的东西。
+ */
+async function findGeneratedFiles(
+	postsDir: string,
+	warnings: string[],
+): Promise<GeneratedFile[]> {
 	const files = await glob("**/*.md", { cwd: postsDir, posix: true });
 	const generated: GeneratedFile[] = [];
 	for (const file of files) {
 		const owner = readOwner(await readHead(path.join(postsDir, file)));
-		if (owner !== null) generated.push({ file, ...owner });
+		if (owner === null) continue;
+		if (owner.notebook === null) {
+			warnings.push(
+				`${file}: 生成标记行超出 ${HEAD_LENGTH} 字节读取窗口，来源不明，已原样保留`,
+			);
+			continue;
+		}
+		generated.push({ file, notebook: owner.notebook });
 	}
 	return generated.sort((a, b) => a.file.localeCompare(b.file));
 }
@@ -151,9 +171,14 @@ export async function generateNotebooks(options: {
 
 		const targetPath = path.join(options.postsDir, target);
 		try {
-			// 撞名保护：目标已存在且不带生成标记 → 是用户手写的，绝不覆写
+			// 撞名保护：目标已存在又拿不到可信的来源标记（不是产物，或标记行读不完）
+			// → 一律当用户手写的处理，绝不覆写
 			const targetHead = await readHead(targetPath);
-			if (targetHead !== null && readOwner(targetHead) === null) {
+			const targetOwner = targetHead === null ? null : readOwner(targetHead);
+			if (
+				targetHead !== null &&
+				(targetOwner === null || targetOwner.notebook === null)
+			) {
 				report.errors.push({
 					file: notebook,
 					message: `目标文件 ${target} 已存在且不是生成的，请重命名 notebook 或删除该文件`,
@@ -203,15 +228,15 @@ export async function generateNotebooks(options: {
 	// 判据取标记内容而不是「目标名与磁盘文件名精确比较」：APFS 等大小写不敏感的卷上
 	// `a.ipynb` 改名成 `A.ipynb` 后写入会落到原 `a.md` 的 inode（磁盘名仍是 a.md），
 	// 按文件名比较会把仍属本轮的产物误判成孤儿删掉，还造成 macOS 与 Linux 行为分歧。
+	// 标记行读不完整的候选根本不在 findGeneratedFiles 的结果里 —— 不确定就不删。
 	const failed = new Set(report.errors.map((error) => error.file));
-	const stale = (await findGeneratedFiles(options.postsDir)).filter((entry) => {
-		// 标记行被短读窗口截断时只剩前缀，退化成前缀匹配
-		const owned = entry.truncated
-			? notebooks.some((notebook) => notebook.startsWith(entry.notebook))
-			: notebooks.includes(entry.notebook);
+	const stale = (
+		await findGeneratedFiles(options.postsDir, report.warnings)
+	).filter(
 		// 本轮失败的 notebook 留下的旧产物照旧清掉（既有语义，不在本次改动范围）
-		return !owned || failed.has(entry.notebook);
-	});
+		(entry) =>
+			!notebooks.includes(entry.notebook) || failed.has(entry.notebook),
+	);
 	for (const { file } of stale) {
 		await fs.rm(path.join(options.postsDir, file), { force: true });
 	}
