@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { ansiToHtml, hasAnsi } from "../src/utils/notebook/ansi";
+import { writeAsset } from "../src/utils/notebook/extractAssets";
 import {
 	NotebookError,
 	parseNotebook,
@@ -364,6 +366,67 @@ await checkAsync("首单元格是代码时不消费，firstBodyCell 为 0", asyn
 	const result = resolveMetadata(doc, "x.ipynb");
 	assert.equal(result.firstBodyCell, 0);
 	assert.equal(result.leadingMarkdown, "");
+});
+
+section("extractAssets");
+await checkAsync("base64 落地为内容 hash 命名文件", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nb-assets-"));
+	const payload = Buffer.from("hello-image").toString("base64");
+	const first = await writeAsset({
+		base64: payload,
+		extension: "png",
+		directory: dir,
+	});
+	assert.equal(first.fileName.endsWith(".png"), true);
+	assert.equal(path.isAbsolute(first.absolutePath), true);
+	assert.equal(await fs.readFile(first.absolutePath, "utf-8"), "hello-image");
+});
+await checkAsync("同一内容重复写入得到同一文件名且不重写", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nb-assets-"));
+	const payload = Buffer.from("same").toString("base64");
+	const a = await writeAsset({
+		base64: payload,
+		extension: "png",
+		directory: dir,
+	});
+	const firstMtime = (await fs.stat(a.absolutePath)).mtimeMs;
+	await delay(20);
+	const b = await writeAsset({
+		base64: payload,
+		extension: "png",
+		directory: dir,
+	});
+	assert.equal(a.fileName, b.fileName);
+	assert.deepEqual(await fs.readdir(dir), [a.fileName]);
+	// 重写会刷新 mtime，故 mtime 不变即证明命中已存在分支、未写盘。
+	assert.equal((await fs.stat(a.absolutePath)).mtimeMs, firstMtime);
+});
+await checkAsync("不同内容得到不同文件名", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nb-assets-"));
+	const a = await writeAsset({
+		base64: Buffer.from("a").toString("base64"),
+		extension: "png",
+		directory: dir,
+	});
+	const b = await writeAsset({
+		base64: Buffer.from("b").toString("base64"),
+		extension: "png",
+		directory: dir,
+	});
+	assert.notEqual(a.fileName, b.fileName);
+});
+await checkAsync("目录不存在时递归创建且 base64 容忍空白", async () => {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "nb-assets-"));
+	const dir = path.join(root, "a", "b");
+	const payload = Buffer.from("wrapped").toString("base64");
+	const wrapped = `${payload.slice(0, 4)}\n  ${payload.slice(4)}\n`;
+	const asset = await writeAsset({
+		base64: wrapped,
+		extension: "svg",
+		directory: dir,
+	});
+	assert.equal(asset.fileName.endsWith(".svg"), true);
+	assert.equal(await fs.readFile(asset.absolutePath, "utf-8"), "wrapped");
 });
 
 console.log(failures === 0 ? "\n全部通过" : `\n${failures} 项失败`);
