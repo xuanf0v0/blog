@@ -23,6 +23,10 @@ const STRING_FIELDS: Record<string, true> = {
 	licenseUrl: true,
 	password: true,
 	passwordHint: true,
+	prevTitle: true,
+	prevSlug: true,
+	nextTitle: true,
+	nextSlug: true,
 };
 
 const DATE_FIELDS: Record<string, true> = {
@@ -38,12 +42,22 @@ const BOOLEAN_FIELDS: Record<string, true> = {
 
 /** YAML 里未加引号的日期会被当成 Date，字符串则原样保留 */
 function normalizeDate(field: string, value: unknown): string {
-	const text =
-		value instanceof Date
-			? value.toISOString().slice(0, 10)
-			: typeof value === "string"
-				? value.trim()
-				: "";
+	let text = "";
+	if (value instanceof Date) {
+		const isMidnightUtc =
+			value.getUTCHours() === 0 &&
+			value.getUTCMinutes() === 0 &&
+			value.getUTCSeconds() === 0 &&
+			value.getUTCMilliseconds() === 0;
+		if (!isMidnightUtc) {
+			throw new NotebookError(
+				`字段 ${field} 必须是纯日期，请写成不带时间的 YYYY-MM-DD：${String(value)}`,
+			);
+		}
+		text = value.toISOString().slice(0, 10);
+	} else if (typeof value === "string") {
+		text = value.trim();
+	}
 	if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) {
 		throw new NotebookError(
 			`字段 ${field} 不是合法的 YYYY-MM-DD 日期：${String(value)}`,

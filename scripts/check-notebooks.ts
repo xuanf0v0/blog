@@ -258,7 +258,8 @@ await checkAsync("tags 类型错误报错而不漏到 schema", async () => {
 });
 
 await checkAsync("YAML 损坏报错", async () => {
-	const doc = notebook({}, [
+	// metadata.blog 给出合法 published，确保唯一失败源是损坏的 YAML
+	const doc = notebook({ blog: { published: "2026-01-01" } }, [
 		{ cell_type: "markdown", source: ["---\n", "a: [1,\n", "---\n"] },
 	]);
 	assert.throws(() => resolveMetadata(doc, "x.ipynb"), NotebookError);
@@ -308,6 +309,62 @@ await checkAsync(
 		assert.equal(resolveMetadata(empty, "x.ipynb").leadingMarkdown, "");
 	},
 );
+
+await checkAsync("prevTitle 等内部字段类型错误报错", async () => {
+	const doc = notebook(
+		{ blog: { published: "2026-01-02", prevTitle: 2024 } },
+		[],
+	);
+	assert.throws(() => resolveMetadata(doc, "x.ipynb"), NotebookError);
+	const ok = notebook(
+		{
+			blog: { published: "2026-01-02", nextTitle: "下一篇", nextSlug: "next" },
+		},
+		[],
+	);
+	const result = resolveMetadata(ok, "x.ipynb");
+	assert.equal(result.frontmatter.nextTitle, "下一篇");
+	assert.equal(result.frontmatter.nextSlug, "next");
+});
+
+await checkAsync("未加引号与加引号的 YAML 日期归一为同一结果", async () => {
+	const unquoted = notebook({}, [
+		{
+			cell_type: "markdown",
+			source: ["---\n", "published: 2026-01-02\n", "---\n"],
+		},
+	]);
+	const quoted = notebook({}, [
+		{
+			cell_type: "markdown",
+			source: ["---\n", 'published: "2026-01-02"\n', "---\n"],
+		},
+	]);
+	const a = resolveMetadata(unquoted, "x.ipynb").frontmatter.published;
+	const b = resolveMetadata(quoted, "x.ipynb").frontmatter.published;
+	assert.equal(a, "2026-01-02");
+	assert.equal(a, b);
+});
+
+await checkAsync("带时间的 YAML 日期报错而不静默改日", async () => {
+	// metadata.blog 给出同日合法值：若 Date 分支放行，本断言将不会抛错
+	const doc = notebook({ blog: { published: "2026-01-02" } }, [
+		{
+			cell_type: "markdown",
+			source: ["---\n", "published: 2026-01-01T23:00:00-05:00\n", "---\n"],
+		},
+	]);
+	assert.throws(() => resolveMetadata(doc, "x.ipynb"), NotebookError);
+});
+
+await checkAsync("首单元格是代码时不消费，firstBodyCell 为 0", async () => {
+	const doc = notebook({ blog: { published: "2026-01-02" } }, [
+		{ cell_type: "code", source: ["1"] },
+	]);
+	const result = resolveMetadata(doc, "x.ipynb");
+	assert.equal(result.firstBodyCell, 0);
+	assert.equal(result.leadingMarkdown, "");
+});
 
 console.log(failures === 0 ? "\n全部通过" : `\n${failures} 项失败`);
 process.exit(failures === 0 ? 0 : 1);
