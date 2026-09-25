@@ -1472,6 +1472,51 @@ await checkAsync("标记行读不完整的同名目标不被覆写", async () =>
 	assert.equal(await fs.readFile(path.join(posts, "w.md"), "utf-8"), overlong);
 });
 
+await checkAsync(
+	"标记路径为空/纯空白的手写 md 不被删除也不被覆写",
+	async () => {
+		const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+		const assets = path.join(posts, "..", "assets-out");
+		// 空路径不可能是生成器写出来的（写入永远带 notebook 路径）：来源不明 →
+		// 既不进孤儿集合，也不当撞名的自家产物覆写
+		const emptyMarker =
+			"---\n# generated-from-notebook: \ntitle: 手写\n---\n\n正文\n";
+		const blankMarker =
+			"---\n# generated-from-notebook:    \ntitle: 手写\n---\n\n正文\n";
+		await fs.writeFile(path.join(posts, "empty.md"), emptyMarker);
+		await fs.writeFile(path.join(posts, "blank.md"), blankMarker);
+		await fs.writeFile(path.join(posts, "x.md"), emptyMarker);
+		await writeNotebook(path.join(posts, "x.ipynb"), [
+			{
+				cell_type: "markdown",
+				source: ["---\n", 'title: "X"\n', "published: 2026-01-01\n", "---\n"],
+			},
+		]);
+		const report = await generateNotebooks({
+			postsDir: posts,
+			assetsDir: assets,
+		});
+		assert.deepEqual(report.generated, []);
+		assert.equal(
+			await fs.readFile(path.join(posts, "empty.md"), "utf-8"),
+			emptyMarker,
+		);
+		assert.equal(
+			await fs.readFile(path.join(posts, "blank.md"), "utf-8"),
+			blankMarker,
+		);
+		assert.equal(
+			await fs.readFile(path.join(posts, "x.md"), "utf-8"),
+			emptyMarker,
+		);
+		assert.equal(report.errors.length, 1);
+		assert.match(report.errors[0].message, /已存在且不是生成的/);
+		// 保留的三个文件都要有提示，用户才知道为什么没被清理/没被覆写
+		assert.equal(report.warnings.length, 3);
+		assert.match(report.warnings[0], /无法确认来源/);
+	},
+);
+
 await checkAsync(".gitignore 内容不变时不重写", async () => {
 	const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
 	const assets = path.join(posts, "..", "assets-out");

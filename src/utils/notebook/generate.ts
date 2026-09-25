@@ -63,7 +63,8 @@ async function readHead(filePath: string): Promise<string | null> {
 interface Owner {
 	/**
 	 * 标记记录的来源 notebook（相对 postsDir 的 posix 路径）。
-	 * 窗口里读不到完整标记行时为 null —— 来源不明，既不删也不覆写。
+	 * 标记行为空/纯空白，或窗口里读不到完整标记行时为 null —— 来源不明，
+	 * 既不删也不覆写（空路径不可能是我们写出来的：写入永远带 notebook 路径）。
 	 */
 	notebook: string | null;
 }
@@ -87,7 +88,12 @@ function readOwner(head: string | null): Owner | null {
 	}
 	const rest = head.slice(YAML_FENCE.length + MARKER_LINE.length);
 	const end = rest.indexOf("\n");
-	return { notebook: end === -1 ? null : rest.slice(0, end) };
+	// 窗口里没有换行（读不完整行）→ 来源不明
+	if (end === -1) return { notebook: null };
+	// 空/纯空白路径同样归入来源不明：否则 notebooks.includes("") 恒为 false，
+	// 手写的空标记文件会被当孤儿删掉（同名时还会被覆写）
+	const notebook = rest.slice(0, end).trim();
+	return { notebook: notebook === "" ? null : notebook };
 }
 
 /**
@@ -106,7 +112,7 @@ async function findGeneratedFiles(
 		if (owner === null) continue;
 		if (owner.notebook === null) {
 			warnings.push(
-				`${file}: 生成标记行超出 ${HEAD_LENGTH} 字节读取窗口，来源不明，已原样保留`,
+				`${file}: 生成标记无法确认来源，已原样保留（空路径或标记行超出 ${HEAD_LENGTH} 字节读取窗口）`,
 			);
 			continue;
 		}
