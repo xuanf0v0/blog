@@ -92,6 +92,43 @@
     @apply my-4;
   }
 
+  /* notebook 的 stdout / stderr / traceback：--codeblock-bg 在明暗两套主题下
+     都是深色，所以文字色必须用固定浅色，不能跟随 --content-meta / --muted
+     （它们会随主题反转，浅色主题下会变成深色而看不见）。 */
+  .nb-output {
+    @apply my-4 rounded-(--radius-large) overflow-x-auto;
+    background: var(--codeblock-bg);
+    color: #e6e6e6;
+    padding: 0.75rem 1rem;
+    font-family:
+      var(--font-jetbrains-mono),
+      ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      Monaco,
+      Consolas,
+      Liberation Mono,
+      Courier New,
+      monospace;
+    font-size: 0.875rem;
+    line-height: 1.5rem;
+    white-space: pre;
+  }
+
+  .nb-output-html {
+    @apply my-4 overflow-x-auto;
+  }
+
+  /* stderr 只是包裹层，内部往往已经是 .nb-output / 代码块，避免叠加外边距 */
+  .nb-stderr {
+    @apply my-4;
+
+    & > .nb-output,
+    & > .expressive-code {
+      @apply my-0;
+    }
+  }
+
   ul,
   ol {
     li::marker {
