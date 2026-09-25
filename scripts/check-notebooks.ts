@@ -4,7 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { ansiToHtml, hasAnsi } from "../src/utils/notebook/ansi";
+import {
+	cellToMarkdown,
+	detectLanguage,
+} from "../src/utils/notebook/cellToMarkdown";
 import { writeAsset } from "../src/utils/notebook/extractAssets";
+import type { OutputContext } from "../src/utils/notebook/outputToMarkdown";
+import { outputToMarkdown } from "../src/utils/notebook/outputToMarkdown";
 import {
 	NotebookError,
 	parseNotebook,
@@ -427,6 +433,231 @@ await checkAsync("目录不存在时递归创建且 base64 容忍空白", async 
 	});
 	assert.equal(asset.fileName.endsWith(".svg"), true);
 	assert.equal(await fs.readFile(asset.absolutePath, "utf-8"), "wrapped");
+});
+
+section("output / cell");
+
+const stubContext: OutputContext = {
+	resolveAsset: async (base64, extension) =>
+		`/assets/${extension}/${base64.length}.${extension}`,
+	resolveAttachment: async (name) => `/attach/${name}`,
+};
+
+await checkAsync("stream 无 ANSI 时用围栏代码块", async () => {
+	const md = await outputToMarkdown(
+		{ output_type: "stream", name: "stdout", text: ["hello\n"] },
+		stubContext,
+	);
+	assert.match(md, /^```text\nhello\n```$/);
+});
+await checkAsync("stream 含 ANSI 时用 pre + span", async () => {
+	const md = await outputToMarkdown(
+		{
+			output_type: "stream",
+			name: "stdout",
+			text: ["\u001b[31mred\u001b[0m\n"],
+		},
+		stubContext,
+	);
+	assert.match(
+		md,
+		/^<pre class="nb-output"><span style="color:#cd0000">red<\/span><\/pre>$/,
+	);
+});
+await checkAsync("stderr 额外包 nb-stderr", async () => {
+	const md = await outputToMarkdown(
+		{ output_type: "stream", name: "stderr", text: ["boom\n"] },
+		stubContext,
+	);
+	assert.match(md, /^<div class="nb-stderr">\n[\s\S]*\n<\/div>$/);
+});
+await checkAsync("text/html 优先于 text/plain", async () => {
+	const md = await outputToMarkdown(
+		{
+			output_type: "display_data",
+			data: { "text/plain": ["<table>"], "text/html": ["<table>x</table>"] },
+		},
+		stubContext,
+	);
+	assert.match(
+		md,
+		/^<div class="nb-output-html">\n<table>x<\/table>\n<\/div>$/,
+	);
+});
+await checkAsync("text/latex 转 $$ 块", async () => {
+	const md = await outputToMarkdown(
+		{ output_type: "execute_result", data: { "text/latex": ["x^2"] } },
+		stubContext,
+	);
+	assert.equal(md, "$$\nx^2\n$$");
+});
+await checkAsync("application/json 重新格式化", async () => {
+	const md = await outputToMarkdown(
+		{
+			output_type: "execute_result",
+			data: { "application/json": ['{"a":1}'] },
+		},
+		stubContext,
+	);
+	assert.equal(md, '```json\n{\n  "a": 1\n}\n```');
+});
+await checkAsync("error 合并 ename/evalue/traceback", async () => {
+	const md = await outputToMarkdown(
+		{
+			output_type: "error",
+			ename: "ValueError",
+			evalue: "bad",
+			traceback: ["Traceback", "ValueError: bad"],
+		},
+		stubContext,
+	);
+	assert.match(md, /ValueError: bad[\s\S]*Traceback/);
+});
+await checkAsync("未知 MIME 回退占位说明", async () => {
+	const md = await outputToMarkdown(
+		{
+			output_type: "display_data",
+			data: { "application/vnd.plotly.v1+json": { a: 1 } },
+		},
+		stubContext,
+	);
+	assert.match(md, /无法渲染的输出/);
+});
+await checkAsync("未知输出类型回退占位说明", async () => {
+	const md = await outputToMarkdown(
+		{ output_type: "update_display_data", data: { "text/plain": ["x"] } },
+		stubContext,
+	);
+	assert.match(md, /无法渲染的输出类型/);
+});
+await checkAsync("markdown 单元格原样输出", async () => {
+	const md = await cellToMarkdown(
+		{ cell_type: "markdown", source: ["# 标题\n", "\n", "正文"] },
+		"python",
+		stubContext,
+	);
+	assert.equal(md, "# 标题\n\n正文");
+});
+await checkAsync("code 单元格带语言围栏与输出", async () => {
+	const md = await cellToMarkdown(
+		{
+			cell_type: "code",
+			source: ["print(1)"],
+			outputs: [{ output_type: "stream", name: "stdout", text: ["1\n"] }],
+		},
+		"python",
+		stubContext,
+	);
+	assert.match(md, /^```python\nprint\(1\)\n```\n\n```text\n1\n```$/);
+});
+await checkAsync("raw 单元格被跳过", async () => {
+	const md = await cellToMarkdown(
+		{ cell_type: "raw", source: ["x"] },
+		"python",
+		stubContext,
+	);
+	assert.equal(md, "");
+});
+await checkAsync("attachments 被替换为抽取路径", async () => {
+	const md = await cellToMarkdown(
+		{
+			cell_type: "markdown",
+			source: ["![p](attachment:image.png)"],
+			attachments: { "image.png": { "image/png": "AAAA" } },
+		},
+		"python",
+		stubContext,
+	);
+	assert.equal(md, "![p](/attach/image.png)");
+});
+await checkAsync("图片输出经 resolveAsset 落地", async () => {
+	const md = await outputToMarkdown(
+		{ output_type: "display_data", data: { "image/png": ["AAAA"] } },
+		stubContext,
+	);
+	assert.equal(md, "![notebook 输出](/assets/png/4.png)");
+});
+await checkAsync("image/jpeg 输出用 jpg 扩展名", async () => {
+	const md = await outputToMarkdown(
+		{ output_type: "display_data", data: { "image/jpeg": ["BBBB"] } },
+		stubContext,
+	);
+	assert.equal(md, "![notebook 输出](/assets/jpg/4.jpg)");
+});
+await checkAsync("SVG 输出原样透传，base64 则解码", async () => {
+	const raw = await outputToMarkdown(
+		{ output_type: "display_data", data: { "image/svg+xml": ["<svg/>"] } },
+		stubContext,
+	);
+	assert.equal(raw, "<svg/>");
+	const encoded = await outputToMarkdown(
+		{
+			output_type: "display_data",
+			data: {
+				"image/svg+xml": [Buffer.from("<svg>x</svg>").toString("base64")],
+			},
+		},
+		stubContext,
+	);
+	assert.equal(encoded, "<svg>x</svg>");
+});
+await checkAsync("内容含反引号时围栏加长", async () => {
+	const md = await outputToMarkdown(
+		{ output_type: "stream", name: "stdout", text: ["a\n```\nb\n"] },
+		stubContext,
+	);
+	assert.equal(md, "````text\na\n```\nb\n````");
+});
+check("语言别名归一", () => {
+	assert.equal(
+		detectLanguage({
+			nbformat: 4,
+			metadata: { language_info: { name: "Python3" } },
+			cells: [],
+		}),
+		"python",
+	);
+	assert.equal(
+		detectLanguage({
+			nbformat: 4,
+			metadata: { kernelspec: { language: "C++" } },
+			cells: [],
+		}),
+		"cpp",
+	);
+	assert.equal(
+		detectLanguage({
+			nbformat: 4,
+			metadata: { kernelspec: { language: "node" } },
+			cells: [],
+		}),
+		"javascript",
+	);
+});
+check("language_info 优先于 kernelspec，缺失时默认 python", () => {
+	assert.equal(
+		detectLanguage({
+			nbformat: 4,
+			metadata: {
+				language_info: { name: "julia" },
+				kernelspec: { language: "python" },
+			},
+			cells: [],
+		}),
+		"julia",
+	);
+	assert.equal(
+		detectLanguage({ nbformat: 4, metadata: {}, cells: [] }),
+		"python",
+	);
+	assert.equal(
+		detectLanguage({
+			nbformat: 4,
+			metadata: { language_info: { name: "  " } },
+			cells: [],
+		}),
+		"python",
+	);
 });
 
 console.log(failures === 0 ? "\n全部通过" : `\n${failures} 项失败`);
