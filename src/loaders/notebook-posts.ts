@@ -13,8 +13,6 @@ export interface NotebookPostsOptions {
 /** 一次保存常触发多个事件（同名 md 的 change/add、编辑器的临时文件），合并成一轮 */
 const REGENERATE_DEBOUNCE_MS = 150;
 
-/** 已经挂过监听的 watcher：load 每轮同步都会被调用，靠引用比对只挂一次 */
-let watched: NonNullable<LoaderContext["watcher"]> | null = null;
 /** 最近一次同步的 context：watcher 回调里没有参数，只能借它打日志 */
 let latestContext: LoaderContext | null = null;
 /** 防抖定时器 */
@@ -53,14 +51,18 @@ function registerWatcher(
 	assetsDir: string,
 ): void {
 	const watcher = context.watcher;
-	// 构建时没有 watcher；dev 下 load 会反复执行，只认第一次那个实例
-	if (watcher === undefined || watched === watcher) return;
-	watched = watcher;
+	// 构建时没有 watcher
+	if (watcher === undefined) return;
 
 	const onNotebookEvent = (changedPath: string): void => {
 		if (!changedPath.toLowerCase().endsWith(".ipynb")) return;
 		scheduleRegeneration(postsDir, assetsDir);
 	};
+	// 每次 load 都重挂，像 glob() 一样：Astro 给每个 ContentLayer 的 watcher 套了
+	// 一层 listener-tracking Proxy，全量 sync 时 removeAllTrackedListeners() 会把
+	// 经它注册的监听全部 off 掉（Proxy 实例本身不变），拿引用比对「只挂一次」会让
+	// .ipynb 监听永久消失 —— 改完 content.config.ts 后再改 notebook 就再无反应。
+	// 重复注册无害：150ms 防抖把同一批事件合并成一轮生成。
 	watcher.on("change", onNotebookEvent);
 	watcher.on("add", onNotebookEvent);
 	watcher.on("unlink", onNotebookEvent);
@@ -92,6 +94,9 @@ export function notebookPosts(options: NotebookPostsOptions = {}): Loader {
 			for (const error of report.errors) {
 				// 单个 notebook 转换失败不该拖垮整站：告警后退化成「少一篇文章」
 				context.logger.warn(`${error.file}: ${error.message}`);
+			}
+			for (const warning of report.warnings) {
+				context.logger.warn(warning);
 			}
 
 			await inner.load(context);

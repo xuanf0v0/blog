@@ -149,7 +149,15 @@ export function resolveMetadata(
 
 	const validated = validate(merged);
 	if (typeof validated.title !== "string" || validated.title.trim() === "") {
-		validated.title = titleFromFileName(fileName);
+		const derived = titleFromFileName(fileName);
+		// 空 title 序列化时会被整键丢掉，schema 的 title: z.string() 没有默认值，
+		// 漏下去就是整次内容同步中断 —— 这里直接跳过该 notebook
+		if (derived === "") {
+			throw new NotebookError(
+				`无法从文件名 ${fileName} 推导标题，请在首单元格 YAML 或 metadata.blog 中显式声明 title`,
+			);
+		}
+		validated.title = derived;
 	}
 
 	return { frontmatter: validated, firstBodyCell, leadingMarkdown };

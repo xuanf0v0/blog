@@ -381,6 +381,15 @@ await checkAsync("首单元格是代码时不消费，firstBodyCell 为 0", asyn
 	assert.equal(result.leadingMarkdown, "");
 });
 
+await checkAsync(
+	"文件名推导不出标题时报错，不让空 title 漏到 schema",
+	async () => {
+		// 空 title 序列化时会被整键丢掉，schema 的 title: z.string() 无默认值 → 内容同步中断
+		const doc = notebook({ blog: { published: "2026-01-02" } }, []);
+		assert.throws(() => resolveMetadata(doc, "--.ipynb"), NotebookError);
+	},
+);
+
 section("extractAssets");
 await checkAsync("base64 落地为内容 hash 命名文件", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nb-assets-"));
@@ -744,8 +753,12 @@ await checkAsync("端到端转换含图片与公式的 notebook", async () => {
 	assert.equal(result.frontmatter.published, "2026-01-02");
 	// 原计划的 /^#?/ 恒真（裁决 R2），改为校验 frontmatter 块真的存在
 	assert.match(result.markdown, /^---\n/);
-	assert.match(result.markdown, /^---\ntitle: "示例"\npublished: 2026-01-02\n/);
-	assert.match(result.markdown, /tags: \["a"\]\n/);
+	// 键与值都经 JSON.stringify 转义：键不加引号时 `"a: b"` 这类键会产出坏 YAML
+	assert.match(
+		result.markdown,
+		/^---\n"title": "示例"\n"published": 2026-01-02\n/,
+	);
+	assert.match(result.markdown, /"tags": \["a"\]\n/);
 	assert.match(result.markdown, /公式 \$x\^2\$/);
 	assert.match(result.markdown, /```python\n1\+1\n```\n\n```text\n2\n```/);
 	assert.match(
@@ -781,14 +794,14 @@ await checkAsync("frontmatter 中日期不加引号", async () => {
 		targetPath: path.join(dir, "d.md"),
 		assetsDir: path.join(dir, "assets"),
 	});
-	assert.match(result.markdown, /published: 2026-01-02\n/);
+	assert.match(result.markdown, /"published": 2026-01-02\n/);
 	assert.doesNotMatch(result.markdown, /published: "2026-01-02"/);
-	assert.match(result.markdown, /updated: 2026-02-03\n/);
+	assert.match(result.markdown, /"updated": 2026-02-03\n/);
 	assert.doesNotMatch(result.markdown, /updated: "2026-02-03"/);
 	// 正文为空时不留多余空行（frontmatter-only 也是合法文档）
 	assert.equal(
 		result.markdown,
-		'---\ntitle: "t"\npublished: 2026-01-02\nupdated: 2026-02-03\n---\n',
+		'---\n"title": "t"\n"published": 2026-01-02\n"updated": 2026-02-03\n---\n',
 	);
 });
 await checkAsync(
@@ -862,9 +875,40 @@ await checkAsync("空串与 null 的键不写进 frontmatter", async () => {
 	assert.equal(Object.hasOwn(result.frontmatter, "category"), false);
 	assert.equal(
 		result.markdown,
-		'---\ntitle: "E"\npublished: 2026-01-01\n---\n',
+		'---\n"title": "E"\n"published": 2026-01-01\n---\n',
 	);
 });
+await checkAsync("需要引号的键被转义，产出仍是合法 YAML", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nb-convert-"));
+	const ipynb = path.join(dir, "keys.ipynb");
+	await fs.writeFile(
+		ipynb,
+		JSON.stringify({
+			nbformat: 4,
+			metadata: {
+				blog: {
+					title: "K",
+					published: "2026-01-01",
+					"a: b": 1,
+					"需要 引号": true,
+				},
+			},
+			cells: [],
+		}),
+	);
+	const result = await convertNotebook({
+		ipynbPath: ipynb,
+		targetPath: path.join(dir, "keys.md"),
+		assetsDir: path.join(dir, "assets"),
+	});
+	// 键不加引号时产出 `a: b: 1`，Astro 侧会以 bad indentation of a mapping
+	// entry 中断整次内容同步；这里必须仍能解析且键原样保留
+	const { frontmatter } = parseFrontmatter(result.markdown);
+	assert.equal(frontmatter["a: b"], 1);
+	assert.equal(frontmatter["需要 引号"], true);
+	assert.equal(frontmatter.title, "K");
+});
+
 await checkAsync("子目录中的 notebook 用相对路径引用图片与附件", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nb-convert-"));
 	const targetDir = path.join(dir, "p", "d");
@@ -944,7 +988,7 @@ await checkAsync(
 		// firstBodyCell 为 0：首格必须照常渲染，且不因空的 leadingMarkdown 多出空块
 		assert.equal(
 			result.markdown,
-			'---\ntitle: "B"\npublished: 2026-05-06\n---\n\n# 正文首格\n',
+			'---\n"title": "B"\n"published": 2026-05-06\n---\n\n# 正文首格\n',
 		);
 	},
 );
@@ -1127,6 +1171,189 @@ await checkAsync("手写 md 不会被当成孤儿清理", async () => {
 	);
 });
 
+await checkAsync("正文提到标记的手写 md 不被删也不被覆写", async () => {
+	const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+	const assets = path.join(posts, "..", "assets-out");
+	// ① 首行不是 `---`，正文里提到标记 —— 旧判据（前 120 字节含该子串）会把它当孤儿删掉
+	const manual =
+		"手写标题\n\n本文的产物由 `# generated-from-notebook: note.ipynb` 识别。\n";
+	await fs.writeFile(path.join(posts, "intro.md"), manual);
+	// ② 首行是 `---`，但第二行不是标记行（frontmatter 里写了别的字段）
+	const fenced =
+		"---\ntitle: 手写\n---\n\n# generated-from-notebook: ghost.ipynb\n";
+	await fs.writeFile(path.join(posts, "later.md"), fenced);
+	await writeNotebook(path.join(posts, "n.ipynb"), [
+		{
+			cell_type: "markdown",
+			source: ["---\n", 'title: "N"\n', "published: 2026-01-01\n", "---\n"],
+		},
+	]);
+	const report = await generateNotebooks({
+		postsDir: posts,
+		assetsDir: assets,
+	});
+	assert.deepEqual(report.generated, ["n.md"]);
+	assert.equal(
+		await fs.readFile(path.join(posts, "intro.md"), "utf-8"),
+		manual,
+	);
+	assert.equal(
+		await fs.readFile(path.join(posts, "later.md"), "utf-8"),
+		fenced,
+	);
+});
+
+await checkAsync("正文提到标记的手写 md 撞名时不报成功的覆写", async () => {
+	const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+	const assets = path.join(posts, "..", "assets-out");
+	const manual =
+		"手写文章\n\n# generated-from-notebook: x.ipynb 就是本文要介绍的机制。\n";
+	await fs.writeFile(path.join(posts, "x.md"), manual);
+	await writeNotebook(path.join(posts, "x.ipynb"), [
+		{
+			cell_type: "markdown",
+			source: ["---\n", 'title: "X"\n', "published: 2026-01-01\n", "---\n"],
+		},
+	]);
+	const report = await generateNotebooks({
+		postsDir: posts,
+		assetsDir: assets,
+	});
+	assert.equal(report.errors.length, 1);
+	assert.match(report.errors[0].message, /已存在且不是生成的/);
+	assert.deepEqual(report.generated, []);
+	assert.equal(await fs.readFile(path.join(posts, "x.md"), "utf-8"), manual);
+});
+
+await checkAsync(
+	"复刻两行头部的手写 md 会被当成产物（刻意接受的取舍）",
+	async () => {
+		const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+		const assets = path.join(posts, "..", "assets-out");
+		// 判据锚定行位置，只能区分「复刻了 `---` + 标记行」与「没复刻」两种文件；
+		// 与真实产物逐字节同形的文件无法区分，本就不该由用户手写
+		await fs.writeFile(
+			path.join(posts, "clone.md"),
+			"---\n# generated-from-notebook: ghost.ipynb\ntitle: 手写\n---\n",
+		);
+		const report = await generateNotebooks({
+			postsDir: posts,
+			assetsDir: assets,
+		});
+		assert.deepEqual(report.generated, []);
+		assert.deepEqual(await fs.readdir(posts), []);
+	},
+);
+
+await checkAsync(
+	"大小写不同名（落回同一 inode）的产物不被当成孤儿删除",
+	async () => {
+		const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+		const assets = path.join(posts, "..", "assets-out");
+		await writeNotebook(path.join(posts, "a.ipynb"), [
+			{
+				cell_type: "markdown",
+				source: ["---\n", 'title: "A"\n', "published: 2026-01-01\n", "---\n"],
+			},
+		]);
+		await generateNotebooks({ postsDir: posts, assetsDir: assets });
+		await fs.rename(path.join(posts, "a.ipynb"), path.join(posts, "A.ipynb"));
+		const report = await generateNotebooks({
+			postsDir: posts,
+			assetsDir: assets,
+		});
+		assert.deepEqual(report.errors, []);
+		assert.deepEqual(report.generated, ["A.md"]);
+		// 大小写不敏感的卷（APFS）上产物仍叫 a.md，文件名与 report 对不上但来源一致
+		// —— 两个平台上都只该留下一个 md，且标记指向改名后的 notebook
+		const produced = (await fs.readdir(posts)).filter((file) =>
+			file.endsWith(".md"),
+		);
+		assert.equal(produced.length, 1, `产物被误删：${produced.join(", ")}`);
+		assert.match(
+			await fs.readFile(path.join(posts, produced[0]), "utf-8"),
+			/^---\n# generated-from-notebook: A\.ipynb\n/,
+		);
+	},
+);
+
+await checkAsync("用户自己的 .gitignore 不被删除也不被覆写", async () => {
+	const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+	const assets = path.join(posts, "..", "assets-out");
+	const mine = "*.tmp\n!keep.txt\n";
+	await fs.writeFile(path.join(posts, ".gitignore"), mine);
+	await writeNotebook(path.join(posts, "k.ipynb"), [
+		{
+			cell_type: "markdown",
+			source: ["---\n", 'title: "K"\n', "published: 2026-01-01\n", "---\n"],
+		},
+	]);
+	const report = await generateNotebooks({
+		postsDir: posts,
+		assetsDir: assets,
+	});
+	assert.deepEqual(report.generated, ["k.md"]);
+	assert.deepEqual(report.errors, []);
+	assert.equal(report.warnings.length, 1);
+	assert.match(report.warnings[0], /\.gitignore 不是本工具生成的/);
+	assert.equal(
+		await fs.readFile(path.join(posts, ".gitignore"), "utf-8"),
+		mine,
+	);
+	// 产物为空（来源 notebook 被删）时同样不能顺手删掉用户文件
+	await fs.rm(path.join(posts, "k.ipynb"));
+	const second = await generateNotebooks({
+		postsDir: posts,
+		assetsDir: assets,
+	});
+	assert.deepEqual(second.generated, []);
+	assert.equal(
+		await fs.readFile(path.join(posts, ".gitignore"), "utf-8"),
+		mine,
+	);
+	assert.match(second.warnings[0], /\.gitignore 不是本工具生成的/);
+});
+
+await checkAsync("文件名推导不出标题时报错并跳过，不产出坏文件", async () => {
+	const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+	const assets = path.join(posts, "..", "assets-out");
+	await writeNotebook(path.join(posts, "--.ipynb"), [
+		{
+			cell_type: "markdown",
+			source: ["---\n", "published: 2026-01-01\n", "---\n"],
+		},
+	]);
+	const report = await generateNotebooks({
+		postsDir: posts,
+		assetsDir: assets,
+	});
+	assert.equal(report.errors.length, 1);
+	assert.match(report.errors[0].message, /推导标题/);
+	assert.deepEqual(report.generated, []);
+	assert.deepEqual(await fs.readdir(posts), ["--.ipynb"]);
+});
+
+await checkAsync("键含冒号的 frontmatter 产出能被 Astro 解析", async () => {
+	const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+	const assets = path.join(posts, "..", "assets-out");
+	await writeNotebook(path.join(posts, "y.ipynb"), [
+		{
+			cell_type: "markdown",
+			source: ["---\n", 'published: "2026-01-01"\n', '"a: b": 1\n', "---\n"],
+		},
+	]);
+	const report = await generateNotebooks({
+		postsDir: posts,
+		assetsDir: assets,
+	});
+	assert.deepEqual(report.errors, []);
+	const generated = await fs.readFile(path.join(posts, "y.md"), "utf-8");
+	const { frontmatter } = parseFrontmatter(generated);
+	assert.equal(frontmatter["a: b"], 1);
+	// 标记插在 frontmatter 内部第一行，含冒号的键照样解析得出来
+	assert.equal(frontmatter.published instanceof Date, true);
+});
+
 await checkAsync(".gitignore 内容不变时不重写", async () => {
 	const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
 	const assets = path.join(posts, "..", "assets-out");
@@ -1219,17 +1446,21 @@ await checkAsync(
 
 section("dev watcher");
 await checkAsync(
-	"同一 watcher 只注册一次，只理会 .ipynb，连发的变动合并成一轮生成",
+	"每次 load 都重挂 watcher（全量 sync 会清掉监听），只理会 .ipynb，连发的变动合并成一轮生成",
 	async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "nb-watch-"));
 		const posts = path.join(root, "posts");
 		await fs.mkdir(posts, { recursive: true });
-		// 最小假 watcher：只关心 loader 怎么挂监听、怎么反应
+		// 最小假 watcher：只关心 loader 怎么挂监听、怎么反应，
+		// 并像 Astro 的 listener-tracking Proxy 一样支持 removeAllTrackedListeners()
 		const handlers: Record<string, Array<(file: string) => void>> = {};
 		const watcher = {
 			add: (): void => {},
 			on: (event: string, handler: (file: string) => void): void => {
 				handlers[event] = [...(handlers[event] ?? []), handler];
+			},
+			removeAllTrackedListeners: (): void => {
+				for (const event of Object.keys(handlers)) handlers[event] = [];
 			},
 		};
 		const emit = (event: string, file: string): void => {
@@ -1261,13 +1492,13 @@ await checkAsync(
 		];
 		await writeNotebook(path.join(posts, "seed.ipynb"), badCells);
 
-		// load 每轮内容同步都会跑：三轮之后监听器仍应只有一套
+		// load 每轮内容同步都会跑，每次都重挂（一次也不挂或只挂一次都会在下面露馅）
 		await loader.load(context);
 		await loader.load(context);
 		await loader.load(context);
-		assert.equal(handlers.change?.length, 1);
-		assert.equal(handlers.add?.length, 1);
-		assert.equal(handlers.unlink?.length, 1);
+		assert.equal(handlers.change?.length, 3);
+		assert.equal(handlers.add?.length, 3);
+		assert.equal(handlers.unlink?.length, 3);
 		assert.equal(runs("seed.ipynb"), 3, "每轮 load 应各生成一次");
 		assert.deepEqual(await fs.readdir(posts), ["seed.ipynb"]);
 
@@ -1294,6 +1525,22 @@ await checkAsync(
 			runs("bad.ipynb"),
 			1,
 			`连发三次变动应合并成一轮生成，实际 ${runs("bad.ipynb")} 轮：${warnings.join(" | ")}`,
+		);
+
+		// 全量 sync（改 content.config.ts）会 removeAllTrackedListeners() 把监听全 off，
+		// 但 watcher 实例不变：这时只有「每次 load 都重挂」能让 .ipynb 监听活过来
+		watcher.removeAllTrackedListeners();
+		assert.equal(handlers.add?.length, 0);
+		await loader.load(context);
+		assert.equal(handlers.add?.length, 1, "全量 sync 后必须重挂监听");
+		const after = path.join(posts, "after.ipynb");
+		await writeNotebook(after, badCells);
+		emit("add", after);
+		await delay(300);
+		assert.equal(
+			runs("after.ipynb"),
+			1,
+			"全量 sync 后的 notebook 变动必须照旧生效",
 		);
 		await fs.rm(root, { recursive: true, force: true });
 	},

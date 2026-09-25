@@ -1,8 +1,9 @@
 import path from "node:path";
+import { parseFrontmatter } from "@astrojs/markdown-remark";
 import { cellToMarkdown, detectLanguage } from "./cellToMarkdown";
 import { writeAsset } from "./extractAssets";
 import type { OutputContext } from "./outputToMarkdown";
-import { parseNotebook } from "./parseNotebook";
+import { isRecord, NotebookError, parseNotebook } from "./parseNotebook";
 import { resolveMetadata } from "./resolveMetadata";
 
 export interface ConvertedNotebook {
@@ -43,15 +44,55 @@ function serializeValue(key: string, value: unknown): string {
 	return JSON.stringify(text);
 }
 
+/** 空值写出来只会污染 YAML，Astro 的 schema 本身也会给默认值 */
+function frontmatterEntries(
+	frontmatter: Record<string, unknown>,
+): Array<[string, unknown]> {
+	return Object.entries(frontmatter).filter(
+		([, value]) => value !== undefined && value !== null && value !== "",
+	);
+}
+
 function serializeFrontmatter(frontmatter: Record<string, unknown>): string {
 	const lines = ["---"];
-	for (const [key, value] of Object.entries(frontmatter)) {
-		// 空值写出来只会污染 YAML，Astro 的 schema 本身也会给默认值
-		if (value === undefined || value === null || value === "") continue;
-		lines.push(`${key}: ${serializeValue(key, value)}`);
+	for (const [key, value] of frontmatterEntries(frontmatter)) {
+		// 键同样要转义：metadata.blog 里出现 `"a: b"` 这类键时不加引号会产出
+		// `a: b: 1`，YAML 直接报 bad indentation，单篇坏产出就把内容同步打断
+		lines.push(`${JSON.stringify(key)}: ${serializeValue(key, value)}`);
 	}
 	lines.push("---");
 	return lines.join("\n");
+}
+
+/**
+ * 写入前的往返校验：坏 frontmatter 会越过隔离带把整次内容同步（astro sync /
+ * check）打断，必须在生成阶段就抛错 —— 单个 notebook 失败只该跳过该文件。
+ * 字段既不丢也不多，Astro 后续解析拿到的就是这里序列化的那批键。
+ */
+function assertRoundTrips(
+	frontmatter: Record<string, unknown>,
+	markdown: string,
+): void {
+	let parsed: unknown;
+	try {
+		parsed = parseFrontmatter(markdown).frontmatter;
+	} catch (error) {
+		throw new NotebookError(
+			`生成的 frontmatter 无法解析：${(error as Error).message}`,
+		);
+	}
+	if (!isRecord(parsed)) {
+		throw new NotebookError("生成的 frontmatter 不是对象");
+	}
+	const expected = frontmatterEntries(frontmatter)
+		.map(([key]) => key)
+		.sort();
+	const actual = Object.keys(parsed).sort();
+	if (expected.join("\n") !== actual.join("\n")) {
+		throw new NotebookError(
+			`frontmatter 往返校验失败：期望字段 ${expected.join("、")}，实际 ${actual.join("、")}`,
+		);
+	}
 }
 
 export async function convertNotebook(
@@ -65,33 +106,31 @@ export async function convertNotebook(
 	const language = detectLanguage(doc);
 	const targetDir = path.dirname(options.targetPath);
 
+	// 图片与生成的 md 不在同一目录，统一用 posix 分隔符写相对路径。
+	// 图片与附件两个回调共用这段「落地 + 取相对路径」，不重复维护同一条路径规则。
+	const writeAndResolve = async (
+		base64: string,
+		extension: string,
+	): Promise<string> => {
+		const asset = await writeAsset({
+			base64,
+			extension,
+			directory: options.assetsDir,
+		});
+		return path
+			.relative(targetDir, asset.absolutePath)
+			.split(path.sep)
+			.join("/");
+	};
+
 	const context: OutputContext = {
-		resolveAsset: async (base64, extension) => {
-			const asset = await writeAsset({
-				base64,
-				extension,
-				directory: options.assetsDir,
-			});
-			// 图片与生成的 md 不在同一目录，统一用 posix 分隔符写相对路径
-			return path
-				.relative(targetDir, asset.absolutePath)
-				.split(path.sep)
-				.join("/");
-		},
+		resolveAsset: writeAndResolve,
 		resolveAttachment: async (name, data) => {
 			const entry = Object.entries(data)[0];
 			if (entry === undefined) return `attachment:${name}`;
 			const [mime, base64] = entry;
 			const subtype = mime.split("/")[1] ?? "bin";
-			const asset = await writeAsset({
-				base64,
-				extension: subtype.split("+")[0] ?? "bin",
-				directory: options.assetsDir,
-			});
-			return path
-				.relative(targetDir, asset.absolutePath)
-				.split(path.sep)
-				.join("/");
+			return writeAndResolve(base64, subtype.split("+")[0] ?? "bin");
 		},
 	};
 
@@ -105,8 +144,7 @@ export async function convertNotebook(
 
 	const header = serializeFrontmatter(frontmatter);
 	const body = blocks.join("\n\n");
-	return {
-		frontmatter,
-		markdown: body === "" ? `${header}\n` : `${header}\n\n${body}\n`,
-	};
+	const markdown = body === "" ? `${header}\n` : `${header}\n\n${body}\n`;
+	assertRoundTrips(frontmatter, markdown);
+	return { frontmatter, markdown };
 }

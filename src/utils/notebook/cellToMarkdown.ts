@@ -1,5 +1,6 @@
 import { fenced } from "./fence";
 import { type OutputContext, outputToMarkdown } from "./outputToMarkdown";
+import { isRecord } from "./parseNotebook";
 import { toText } from "./text";
 import type { NotebookCell, NotebookDocument } from "./types";
 
@@ -17,15 +18,11 @@ const LANGUAGE_ALIASES: Record<string, string> = {
 
 export function detectLanguage(doc: NotebookDocument): string {
 	const languageInfo = doc.metadata.language_info;
-	const fromLanguageInfo =
-		typeof languageInfo === "object" && languageInfo !== null
-			? (languageInfo as Record<string, unknown>).name
-			: undefined;
+	const fromLanguageInfo = isRecord(languageInfo)
+		? languageInfo.name
+		: undefined;
 	const kernelspec = doc.metadata.kernelspec;
-	const fromKernelspec =
-		typeof kernelspec === "object" && kernelspec !== null
-			? (kernelspec as Record<string, unknown>).language
-			: undefined;
+	const fromKernelspec = isRecord(kernelspec) ? kernelspec.language : undefined;
 	const raw =
 		typeof fromLanguageInfo === "string" ? fromLanguageInfo : fromKernelspec;
 	if (typeof raw !== "string" || raw.trim() === "") return "python";
