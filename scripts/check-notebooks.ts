@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseFrontmatter } from "@astrojs/markdown-remark";
+import { notebookPosts } from "../src/loaders/notebook-posts";
 import { ansiToHtml, hasAnsi } from "../src/utils/notebook/ansi";
 import {
 	cellToMarkdown,
@@ -1183,6 +1184,36 @@ await checkAsync("生成的旧文件被认作同源，重跑不报撞名", async
 	assert.deepEqual(second.errors, []);
 	assert.deepEqual(second.generated, ["r.md"]);
 });
+
+section("collection");
+await checkAsync(
+	"posts 集合的 loader 接上生成器，生成物满足 schema 要求",
+	async () => {
+		const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-col-"));
+		const assets = path.join(posts, "..", "assets-out");
+		await writeNotebook(path.join(posts, "e.ipynb"), [
+			{
+				cell_type: "markdown",
+				source: ["---\n", 'title: "E"\n', "published: 2026-01-01\n", "---\n"],
+			},
+			{ cell_type: "markdown", source: ["正文一段。\n"] },
+		]);
+
+		// 绝对路径同样能解析（内部按 URL 相对根目录解析，glob 接受同一种写法）
+		const loader = notebookPosts({ base: posts, assetsDir: assets });
+		assert.equal(typeof loader.load, "function");
+
+		await generateNotebooks({ postsDir: posts, assetsDir: assets });
+		const generated = await fs.readFile(path.join(posts, "e.md"), "utf-8");
+		// 标记必须是 frontmatter 块内部第一行的 YAML 注释：`---` 得在文件第 0
+		// 字节，否则 Astro 的 frontmatter 正则匹配不到，posts schema 会校验失败
+		assert.match(generated, /^---\n# generated-from-notebook: e\.ipynb\n/);
+		// 集合要拿到 title/published，frontmatter 必须能被 Astro 解析成对象
+		const { frontmatter } = parseFrontmatter(generated);
+		assert.equal(frontmatter.title, "E");
+		assert.ok(frontmatter.published instanceof Date);
+	},
+);
 
 console.log(failures === 0 ? "\n全部通过" : `\n${failures} 项失败`);
 process.exit(failures === 0 ? 0 : 1);
