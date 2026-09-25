@@ -8,6 +8,7 @@ import {
 	cellToMarkdown,
 	detectLanguage,
 } from "../src/utils/notebook/cellToMarkdown";
+import { convertNotebook } from "../src/utils/notebook/convertNotebook";
 import { writeAsset } from "../src/utils/notebook/extractAssets";
 import { fenced } from "../src/utils/notebook/fence";
 import type { OutputContext } from "../src/utils/notebook/outputToMarkdown";
@@ -683,6 +684,265 @@ await checkAsync("cell 与 output 共用同一围栏实现", async () => {
 	assert.equal(fromCell, "````text\na\n```\nb\n````");
 	assert.equal(fromOutput, fromCell);
 });
+
+section("convertNotebook");
+await checkAsync("端到端转换含图片与公式的 notebook", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nb-convert-"));
+	const ipynb = path.join(dir, "demo.ipynb");
+	const png = Buffer.from("fake-png").toString("base64");
+	await fs.writeFile(
+		ipynb,
+		JSON.stringify({
+			nbformat: 4,
+			metadata: { language_info: { name: "python3" } },
+			cells: [
+				{
+					cell_type: "markdown",
+					source: [
+						"---\n",
+						'title: "示例"\n',
+						"published: 2026-01-02\n",
+						'tags: ["a"]\n',
+						"---\n",
+					],
+				},
+				{ cell_type: "markdown", source: ["公式 $x^2$\n"] },
+				{
+					cell_type: "code",
+					source: ["1+1"],
+					outputs: [
+						{
+							output_type: "execute_result",
+							data: { "text/plain": ["2"] },
+						},
+					],
+				},
+				{
+					cell_type: "code",
+					source: ["plot()"],
+					outputs: [
+						{
+							output_type: "display_data",
+							data: { "image/png": [png] },
+						},
+					],
+				},
+			],
+		}),
+	);
+	const result = await convertNotebook({
+		ipynbPath: ipynb,
+		targetPath: path.join(dir, "demo.md"),
+		assetsDir: path.join(dir, "assets"),
+	});
+	assert.equal(result.frontmatter.title, "示例");
+	assert.equal(result.frontmatter.published, "2026-01-02");
+	// 原计划的 /^#?/ 恒真（裁决 R2），改为校验 frontmatter 块真的存在
+	assert.match(result.markdown, /^---\n/);
+	assert.match(result.markdown, /^---\ntitle: "示例"\npublished: 2026-01-02\n/);
+	assert.match(result.markdown, /tags: \["a"\]\n/);
+	assert.match(result.markdown, /公式 \$x\^2\$/);
+	assert.match(result.markdown, /```python\n1\+1\n```\n\n```text\n2\n```/);
+	assert.match(
+		result.markdown,
+		/!\[notebook 输出\]\(assets\/[0-9a-f]{16}\.png\)/,
+	);
+	assert.equal((await fs.readdir(path.join(dir, "assets"))).length, 1);
+});
+await checkAsync("frontmatter 中日期不加引号", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nb-convert-"));
+	const ipynb = path.join(dir, "d.ipynb");
+	await fs.writeFile(
+		ipynb,
+		JSON.stringify({
+			nbformat: 4,
+			metadata: {},
+			cells: [
+				{
+					cell_type: "markdown",
+					source: [
+						"---\n",
+						'title: "t"\n',
+						"published: 2026-01-02\n",
+						"updated: 2026-02-03\n",
+						"---\n",
+					],
+				},
+			],
+		}),
+	);
+	const result = await convertNotebook({
+		ipynbPath: ipynb,
+		targetPath: path.join(dir, "d.md"),
+		assetsDir: path.join(dir, "assets"),
+	});
+	assert.match(result.markdown, /published: 2026-01-02\n/);
+	assert.doesNotMatch(result.markdown, /published: "2026-01-02"/);
+	assert.match(result.markdown, /updated: 2026-02-03\n/);
+	assert.doesNotMatch(result.markdown, /updated: "2026-02-03"/);
+	// 正文为空时不留多余空行（frontmatter-only 也是合法文档）
+	assert.equal(
+		result.markdown,
+		'---\ntitle: "t"\npublished: 2026-01-02\nupdated: 2026-02-03\n---\n',
+	);
+});
+await checkAsync(
+	"首单元格 YAML 之后的正文排在 frontmatter 与正文块之间",
+	async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nb-convert-"));
+		const ipynb = path.join(dir, "lead.ipynb");
+		await fs.writeFile(
+			ipynb,
+			JSON.stringify({
+				nbformat: 4,
+				metadata: {},
+				cells: [
+					{
+						cell_type: "markdown",
+						source: [
+							"---\n",
+							'title: "L"\n',
+							"published: 2026-01-01\n",
+							"---\n",
+							"\n",
+							"这里是引言，不能被丢掉。\n",
+						],
+					},
+					{ cell_type: "code", source: ["2+2"], outputs: [] },
+				],
+			}),
+		);
+		const result = await convertNotebook({
+			ipynbPath: ipynb,
+			targetPath: path.join(dir, "lead.md"),
+			assetsDir: path.join(dir, "assets"),
+		});
+		assert.match(
+			result.markdown,
+			/---\n\n这里是引言，不能被丢掉。\n\n```python\n2\+2\n```\n$/,
+		);
+	},
+);
+await checkAsync("空串与 null 的键不写进 frontmatter", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nb-convert-"));
+	const ipynb = path.join(dir, "e.ipynb");
+	await fs.writeFile(
+		ipynb,
+		JSON.stringify({
+			nbformat: 4,
+			metadata: {},
+			cells: [
+				{
+					cell_type: "markdown",
+					source: [
+						"---\n",
+						'title: "E"\n',
+						"published: 2026-01-01\n",
+						'description: ""\n',
+						"image:\n",
+						"category: null\n",
+						"---\n",
+					],
+				},
+			],
+		}),
+	);
+	const result = await convertNotebook({
+		ipynbPath: ipynb,
+		targetPath: path.join(dir, "e.md"),
+		assetsDir: path.join(dir, "assets"),
+	});
+	assert.equal(result.frontmatter.description, "");
+	assert.equal(Object.hasOwn(result.frontmatter, "image"), false);
+	assert.equal(Object.hasOwn(result.frontmatter, "category"), false);
+	assert.equal(
+		result.markdown,
+		'---\ntitle: "E"\npublished: 2026-01-01\n---\n',
+	);
+});
+await checkAsync("子目录中的 notebook 用相对路径引用图片与附件", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nb-convert-"));
+	const targetDir = path.join(dir, "p", "d");
+	await fs.mkdir(targetDir, { recursive: true });
+	const png = Buffer.from("attachment-png").toString("base64");
+	const ipynb = path.join(targetDir, "sub.ipynb");
+	await fs.writeFile(
+		ipynb,
+		JSON.stringify({
+			nbformat: 4,
+			metadata: {},
+			cells: [
+				{
+					cell_type: "markdown",
+					source: ["---\n", 'title: "S"\n', "published: 2026-01-01\n", "---\n"],
+				},
+				{
+					cell_type: "markdown",
+					source: ["![示意图](attachment:fig.png)\n"],
+					attachments: { "fig.png": { "image/png": png } },
+				},
+				{
+					cell_type: "code",
+					source: ["plot()"],
+					outputs: [
+						{
+							output_type: "display_data",
+							data: { "image/png": [png] },
+						},
+					],
+				},
+			],
+		}),
+	);
+	const assetsDir = path.join(dir, "as", "sub");
+	const result = await convertNotebook({
+		ipynbPath: ipynb,
+		targetPath: path.join(targetDir, "sub.md"),
+		assetsDir,
+	});
+	assert.ok(result.markdown.includes("![示意图]("));
+	assert.doesNotMatch(result.markdown, /attachment:fig\.png/);
+	const references = [...result.markdown.matchAll(/\]\(([^)]+)\)/g)].map(
+		(match) => match[1],
+	);
+	assert.equal(references.length, 2);
+	const [attachmentRef, outputRef] = references;
+	// 目标在 p/d 下、图片在 as 下 → 必须上溯两层，而不是写死 `..`
+	assert.match(attachmentRef, /^\.\.\/\.\.\/as\/sub\/[0-9a-f]{16}\.png$/);
+	// 附件与输出内容相同 → 命中同一个内容哈希文件
+	assert.equal(attachmentRef, outputRef);
+	for (const reference of references) {
+		await fs.access(path.resolve(targetDir, reference));
+	}
+	assert.equal((await fs.readdir(assetsDir)).length, 1);
+});
+
+await checkAsync(
+	"没有 YAML 单元格时用 metadata.blog 做 frontmatter",
+	async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nb-convert-"));
+		const ipynb = path.join(dir, "b.ipynb");
+		await fs.writeFile(
+			ipynb,
+			JSON.stringify({
+				nbformat: 4,
+				metadata: { blog: { title: "B", published: "2026-05-06" } },
+				cells: [{ cell_type: "markdown", source: ["# 正文首格\n"] }],
+			}),
+		);
+		const result = await convertNotebook({
+			ipynbPath: ipynb,
+			targetPath: path.join(dir, "b.md"),
+			assetsDir: path.join(dir, "assets"),
+		});
+		assert.equal(result.frontmatter.title, "B");
+		// firstBodyCell 为 0：首格必须照常渲染，且不因空的 leadingMarkdown 多出空块
+		assert.equal(
+			result.markdown,
+			'---\ntitle: "B"\npublished: 2026-05-06\n---\n\n# 正文首格\n',
+		);
+	},
+);
 
 console.log(failures === 0 ? "\n全部通过" : `\n${failures} 项失败`);
 process.exit(failures === 0 ? 0 : 1);
