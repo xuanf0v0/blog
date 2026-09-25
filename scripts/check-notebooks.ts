@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { parseFrontmatter } from "@astrojs/markdown-remark";
 import { ansiToHtml, hasAnsi } from "../src/utils/notebook/ansi";
 import {
 	cellToMarkdown,
@@ -1079,10 +1080,13 @@ await checkAsync(
 			path.join(posts, "sub", "deep", "n.md"),
 			"utf-8",
 		);
-		// 标记是唯一的来源凭据：必须在首行，且用相对 postsDir 的 posix 路径
-		assert.equal(
-			md.split("\n")[0],
-			"<!-- generated-from-notebook: sub/deep/n.ipynb -->",
+		// 标记是唯一的来源凭据：必须在 frontmatter 块首行、用相对 postsDir 的 posix 路径，
+		// 且整体落在 120 字节短读窗口内（撞名检测与孤儿清理都只读开头这一段）
+		const lines = md.split("\n");
+		assert.equal(lines[0], "---");
+		assert.equal(lines[1], "# generated-from-notebook: sub/deep/n.ipynb");
+		assert.ok(
+			md.slice(0, 120).includes("# generated-from-notebook: sub/deep/n.ipynb"),
 		);
 		const ignoreLines = (
 			await fs.readFile(path.join(posts, ".gitignore"), "utf-8")
@@ -1135,6 +1139,49 @@ await checkAsync(".gitignore 内容不变时不重写", async () => {
 	await delay(20);
 	await generateNotebooks({ postsDir: posts, assetsDir: assets });
 	assert.equal((await fs.stat(ignorePath)).mtimeMs, before);
+});
+
+await checkAsync(
+	"标记不破坏 frontmatter：Astro parseFrontmatter 能取到字段",
+	async () => {
+		const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+		const assets = path.join(posts, "..", "assets-out");
+		await writeNotebook(path.join(posts, "pf.ipynb"), [
+			{
+				cell_type: "markdown",
+				source: ["---\n", 'title: "PF"\n', "published: 2026-02-03\n", "---\n"],
+			},
+		]);
+		await generateNotebooks({ postsDir: posts, assetsDir: assets });
+		const md = await fs.readFile(path.join(posts, "pf.md"), "utf-8");
+		const { frontmatter, content } = parseFrontmatter(md);
+		assert.equal(frontmatter.title, "PF");
+		assert.ok(frontmatter.published instanceof Date);
+		assert.equal(
+			(frontmatter.published as Date).toISOString().slice(0, 10),
+			"2026-02-03",
+		);
+		// frontmatter 与其中的标记注释在渲染前被整体摘掉，不会漏进正文
+		assert.doesNotMatch(content, /generated-from-notebook/);
+	},
+);
+
+await checkAsync("生成的旧文件被认作同源，重跑不报撞名", async () => {
+	const posts = await fs.mkdtemp(path.join(os.tmpdir(), "nb-gen-"));
+	const assets = path.join(posts, "..", "assets-out");
+	await writeNotebook(path.join(posts, "r.ipynb"), [
+		{
+			cell_type: "markdown",
+			source: ["---\n", 'title: "R"\n', "published: 2026-01-01\n", "---\n"],
+		},
+	]);
+	await generateNotebooks({ postsDir: posts, assetsDir: assets });
+	const second = await generateNotebooks({
+		postsDir: posts,
+		assetsDir: assets,
+	});
+	assert.deepEqual(second.errors, []);
+	assert.deepEqual(second.generated, ["r.md"]);
 });
 
 console.log(failures === 0 ? "\n全部通过" : `\n${failures} 项失败`);

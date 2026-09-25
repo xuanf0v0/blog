@@ -10,8 +10,16 @@ export interface GenerateReport {
 	errors: Array<{ file: string; message: string }>;
 }
 
-/** 生成标记的前缀；标记必须位于文件首行，读取方只读前 120 字节 */
-const MARKER = "<!-- generated-from-notebook:";
+/**
+ * 生成标记：YAML 注释，插在 frontmatter 块内部第一行。
+ * 不用 HTML 注释配 `---` 在前的写法 —— Astro 的 frontmatter 正则
+ * `/(?:^\uFEFF?|^\s*\n)(?:---|\+\+\+)/` 只容许一个纯空白行作前缀，
+ * 首行是 HTML 注释时 frontmatter 会被解析成 `{}`，导致 schema 校验失败。
+ * 放在 frontmatter 内部则 `---` 仍在文件第 0 字节，且标记仍落在开头 60 字节内，
+ * 供下面的 120 字节短读识别。
+ */
+const MARKER = "# generated-from-notebook:";
+const YAML_FENCE = "---\n";
 const HEAD_LENGTH = 120;
 const IGNORE_HEADER = [
 	"# 自动生成，请勿手改 —— 由 src/utils/notebook/generate.ts 维护",
@@ -109,8 +117,18 @@ export async function generateNotebooks(options: {
 					notebook.replace(/\.ipynb$/i, ""),
 				),
 			});
-			// 标记必须在首行：撞名检测只读文件开头 120 字节
-			const content = `${MARKER} ${notebook} -->\n\n${converted.markdown.replace(/\n+$/, "")}\n`;
+			// 标记插进 frontmatter 块内部第一行（`---` 之后），既保证 `---`
+			// 仍在文件第 0 字节，又让标记落在开头若干字节内供短读识别。
+			// 缺 frontmatter 是不该出现的状态，明确报错而不是静默产出坏文件。
+			if (!converted.markdown.startsWith(YAML_FENCE)) {
+				throw new NotebookError(
+					"转换结果缺少 YAML frontmatter，无法插入生成标记",
+				);
+			}
+			const marked = `${YAML_FENCE}${MARKER} ${notebook}\n${converted.markdown.slice(
+				YAML_FENCE.length,
+			)}`;
+			const content = `${marked.replace(/\n+$/, "")}\n`;
 			// 逐字节比较后再写：内容没变就不动 mtime，避免 Vite 热重载循环
 			const existing = await fs.readFile(targetPath, "utf-8").catch(() => null);
 			if (existing !== content) {
