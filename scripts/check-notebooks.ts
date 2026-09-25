@@ -1,11 +1,26 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { ansiToHtml, hasAnsi } from "../src/utils/notebook/ansi";
+import { NotebookError, parseNotebook } from "../src/utils/notebook/parseNotebook";
+import { toText } from "../src/utils/notebook/text";
 
 let failures = 0;
 
 function check(name: string, run: () => void): void {
 	try {
 		run();
+		console.log(`  ok  ${name}`);
+	} catch (error) {
+		failures += 1;
+		console.error(`FAIL  ${name}\n      ${(error as Error).message}`);
+	}
+}
+
+async function checkAsync(name: string, run: () => Promise<void>): Promise<void> {
+	try {
+		await run();
 		console.log(`  ok  ${name}`);
 	} catch (error) {
 		failures += 1;
@@ -104,6 +119,43 @@ check("hasAnsi 覆盖非 SGR 序列与裸 CR", () => {
 	assert.equal(hasAnsi("\u001b]0;t\u0007x"), true);
 	assert.equal(hasAnsi("a\r\nb"), true);
 	assert.equal(hasAnsi("a\nb"), false);
+});
+
+section("text");
+check("行数组拼接为字符串", () => {
+	assert.equal(toText(["a\n", "b"]), "a\nb");
+	assert.equal(toText("plain"), "plain");
+	assert.equal(toText(undefined), "");
+});
+
+section("parseNotebook");
+await checkAsync("合法 notebook 解析成功", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nb-"));
+	const file = path.join(dir, "ok.ipynb");
+	await fs.writeFile(
+		file,
+		JSON.stringify({ nbformat: 4, metadata: {}, cells: [{ cell_type: "markdown", source: ["hi"] }] }),
+	);
+	const doc = await parseNotebook(file);
+	assert.equal(doc.cells.length, 1);
+});
+await checkAsync("JSON 损坏报 NotebookError", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nb-"));
+	const file = path.join(dir, "broken.ipynb");
+	await fs.writeFile(file, "{ not json");
+	await assert.rejects(() => parseNotebook(file), NotebookError);
+});
+await checkAsync("缺 nbformat 报 NotebookError", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nb-"));
+	const file = path.join(dir, "old.ipynb");
+	await fs.writeFile(file, JSON.stringify({ cells: [] }));
+	await assert.rejects(() => parseNotebook(file), NotebookError);
+});
+await checkAsync("cells 非数组报 NotebookError", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nb-"));
+	const file = path.join(dir, "bad.ipynb");
+	await fs.writeFile(file, JSON.stringify({ nbformat: 4, cells: {} }));
+	await assert.rejects(() => parseNotebook(file), NotebookError);
 });
 
 console.log(failures === 0 ? "\n全部通过" : `\n${failures} 项失败`);
