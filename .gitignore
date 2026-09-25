@@ -40,3 +40,6 @@ package/
 
 # 隔离工作区（git worktree）
 .worktrees/
+
+# notebook 抽取的图片（由 src/utils/notebook/generate.ts 生成）
+/src/assets/notebooks/
