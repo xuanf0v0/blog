@@ -7,7 +7,12 @@ import {
 	NotebookError,
 	parseNotebook,
 } from "../src/utils/notebook/parseNotebook";
+import { resolveMetadata } from "../src/utils/notebook/resolveMetadata";
 import { toText } from "../src/utils/notebook/text";
+import type {
+	NotebookCell,
+	NotebookDocument,
+} from "../src/utils/notebook/types";
 
 let failures = 0;
 
@@ -201,6 +206,62 @@ await checkAsync("根节点非对象报 NotebookError", async () => {
 	await assert.rejects(() => parseNotebook(file), NotebookError);
 	await fs.writeFile(file, JSON.stringify([]));
 	await assert.rejects(() => parseNotebook(file), NotebookError);
+});
+
+section("resolveMetadata");
+
+function notebook(
+	metadata: Record<string, unknown>,
+	cells: NotebookCell[],
+): NotebookDocument {
+	return { nbformat: 4, metadata, cells };
+}
+
+await checkAsync("首单元格 YAML 覆盖 metadata.blog", async () => {
+	const doc = notebook(
+		{ blog: { title: "来自 metadata", published: "2026-01-01" } },
+		[
+			{
+				cell_type: "markdown",
+				source: ["---\n", 'title: "来自 YAML"\n', "---\n"],
+			},
+		],
+	);
+	const result = resolveMetadata(doc, "x.ipynb");
+	assert.equal(result.frontmatter.title, "来自 YAML");
+	assert.equal(result.frontmatter.published, "2026-01-01");
+	assert.equal(result.firstBodyCell, 1);
+});
+
+await checkAsync("缺 published 报错", async () => {
+	const doc = notebook({ blog: { title: "t" } }, []);
+	assert.throws(() => resolveMetadata(doc, "x.ipynb"), NotebookError);
+});
+
+await checkAsync("published 为 null 等同于缺失", async () => {
+	const doc = notebook({ blog: { title: "t", published: null } }, []);
+	assert.throws(() => resolveMetadata(doc, "x.ipynb"), NotebookError);
+});
+
+await checkAsync("缺 title 时用文件名兜底", async () => {
+	const doc = notebook({ blog: { published: "2026-01-01" } }, []);
+	const result = resolveMetadata(doc, "my-notebook.ipynb");
+	assert.equal(result.frontmatter.title, "my notebook");
+});
+
+await checkAsync("tags 类型错误报错而不漏到 schema", async () => {
+	const doc = notebook(
+		{ blog: { title: "t", published: "2026-01-01", tags: "CUDA" } },
+		[],
+	);
+	assert.throws(() => resolveMetadata(doc, "x.ipynb"), NotebookError);
+});
+
+await checkAsync("YAML 损坏报错", async () => {
+	const doc = notebook({}, [
+		{ cell_type: "markdown", source: ["---\n", "a: [1,\n", "---\n"] },
+	]);
+	assert.throws(() => resolveMetadata(doc, "x.ipynb"), NotebookError);
 });
 
 console.log(failures === 0 ? "\n全部通过" : `\n${failures} 项失败`);
