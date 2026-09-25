@@ -37,3 +37,6 @@ Firefly-docs/
 cache/
 package/
 .obsidian/
+
+# 隔离工作区（git worktree）
+.worktrees/
