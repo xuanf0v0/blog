@@ -1,3 +1,4 @@
+import { fenced } from "./fence";
 import { type OutputContext, outputToMarkdown } from "./outputToMarkdown";
 import { toText } from "./text";
 import type { NotebookCell, NotebookDocument } from "./types";
@@ -32,17 +33,6 @@ export function detectLanguage(doc: NotebookDocument): string {
 	return LANGUAGE_ALIASES[normalized] ?? normalized;
 }
 
-function fencedCode(code: string, language: string): string {
-	const body = code.replace(/\n+$/, "");
-	let longest = 0;
-	// 不能对 `match(...) ?? []` 的联合直接 reduce：回调参数会被推断为 never
-	for (const run of body.match(/`+/g) ?? []) {
-		longest = Math.max(longest, run.length);
-	}
-	const fence = "`".repeat(Math.max(3, longest + 1));
-	return `${fence}${language}\n${body}\n${fence}`;
-}
-
 async function markdownCell(
 	cell: NotebookCell,
 	context: OutputContext,
@@ -69,7 +59,7 @@ export async function cellToMarkdown(
 		return "";
 	}
 
-	const parts: string[] = [fencedCode(toText(cell.source), language)];
+	const parts: string[] = [fenced(toText(cell.source), language)];
 	for (const output of cell.outputs ?? []) {
 		const rendered = await outputToMarkdown(output, context);
 		if (rendered.trim() !== "") parts.push(rendered);

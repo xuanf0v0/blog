@@ -9,6 +9,7 @@ import {
 	detectLanguage,
 } from "../src/utils/notebook/cellToMarkdown";
 import { writeAsset } from "../src/utils/notebook/extractAssets";
+import { fenced } from "../src/utils/notebook/fence";
 import type { OutputContext } from "../src/utils/notebook/outputToMarkdown";
 import { outputToMarkdown } from "../src/utils/notebook/outputToMarkdown";
 import {
@@ -658,6 +659,29 @@ check("language_info 优先于 kernelspec，缺失时默认 python", () => {
 		}),
 		"python",
 	);
+});
+
+check("fenced 普通内容用三反引号并去掉尾部换行", () => {
+	assert.equal(fenced("hello\n", "text"), "```text\nhello\n```");
+	assert.equal(fenced("a\n\n", "python"), "```python\na\n```");
+});
+check("fenced 按内容里的最长反引号串加长", () => {
+	assert.equal(fenced("a\n```\nb", "text"), "````text\na\n```\nb\n````");
+	assert.equal(fenced("a\n````\nb", "text"), "`````text\na\n````\nb\n`````");
+});
+await checkAsync("cell 与 output 共用同一围栏实现", async () => {
+	const snippet = "a\n```\nb\n";
+	const fromCell = await cellToMarkdown(
+		{ cell_type: "code", source: [snippet], outputs: [] },
+		"text",
+		stubContext,
+	);
+	const fromOutput = await outputToMarkdown(
+		{ output_type: "stream", name: "stdout", text: [snippet] },
+		stubContext,
+	);
+	assert.equal(fromCell, "````text\na\n```\nb\n````");
+	assert.equal(fromOutput, fromCell);
 });
 
 console.log(failures === 0 ? "\n全部通过" : `\n${failures} 项失败`);

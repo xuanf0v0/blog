@@ -1,4 +1,5 @@
 import { ansiToHtml, hasAnsi } from "./ansi";
+import { fenced } from "./fence";
 import { toText } from "./text";
 import type { NotebookOutput } from "./types";
 
@@ -22,17 +23,6 @@ const MIME_PRIORITY = [
 	"application/json",
 	"text/plain",
 ];
-
-function fenced(text: string, language: string): string {
-	const body = text.replace(/\n+$/, "");
-	let longest = 0;
-	// 不能对 `match(...) ?? []` 的联合直接 reduce：回调参数会被推断为 never
-	for (const run of body.match(/`+/g) ?? []) {
-		longest = Math.max(longest, run.length);
-	}
-	const fence = "`".repeat(Math.max(3, longest + 1));
-	return `${fence}${language}\n${body}\n${fence}`;
-}
 
 /** 含 ANSI 时只能用原生 HTML，围栏代码块会把 span 当字面量转义 */
 function textBlock(text: string): string {
