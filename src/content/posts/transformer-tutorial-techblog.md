@@ -291,21 +291,21 @@ query = query.view(query.shape[0], query.shape[1], -1, self.d_k).transpose(1, 2)
 
 [batch, seq_len, d_model] 先拆成 [batch, seq_len, h, d_k]，再把 h 换到前面，得到 [batch, h, seq_len, d_k]。三块张量做同样的处理，之后 batched matmul 会把 batch 和头一起算掉。
 
-转置后张量通常不再连续，因此在输出端先 `transpose` 回 `[batch, seq_len, h, d_k]`，再调用 `contiguous()`，最后 `view` 成 `[batch, seq_len, h * d_k]`。`contiguous()` 在需要时会复制数据；若内存布局已经连续，则不一定需要复制。
+交换位置后后张量通常不再连续，因此在输出端先 `transpose` 回 `[batch, seq_len, h, d_k]`，再调用 `contiguous()`，最后 `view` 成 `[batch, seq_len, h * d_k]`。`contiguous()` 在需要时会复制数据；若内存布局已经连续，则不一定需要复制。
 
 ### 缩放点积注意力的计算接口
 
-它不需要 self。$d_k$ 直接从 query 的最后一维取，比从 self 里读更省事，也方便单独测。
+它不需要 self。所以前面需要显式的声明 @staticmethod 。$d_k$ 直接从 query 的最后一维取，比从 self 里读更省事，也方便单独测。
 
 它返回两份东西，加权求和的结果和注意力权重，权重是从同一处算出来的中间产物。forward 把两份都接住，只把前一份继续往下传。
 
-调用的形参顺序是 `attention(query, key, value, dropout, mask)`，dropout 在 mask 前面。传错参数是否立刻报错，取决于传入对象及后续操作；不要依赖错误一定会延迟到某一行才出现。
+
 
 ### 双头注意力的形状示例
 
 ![多头注意力的拆头与权重](../../assets/images/transformer-example/step6-multi-head-attention.png)
 
-例子里 $d_{model}=4$、$h=2$，每个头分到 2 维。输入形状为 `[1, 3, 4]`，拆头后变成 `[1, 2, 3, 2]`。图的下半部分是两头算出来的注意力权重，每张 $3 \times 3$，行是 query，列是 key。
+例子里 $d_{model}=4$、$h=2$，每个头分到 2 维。输入形状为 `[1, 3, 4]`，拆头换位后变成 `[1, 2, 3, 2]`。图的下半部分是两头算出来的注意力权重，每张 $3 \times 3$，行是 query，列是 key。
 
 图中每个头的权重矩阵都是 $3\times3$。每一行对应一个 query 位置，每一列对应一个 key 位置；在未应用 dropout 的 softmax 权重上，每行之和为 1。不同头使用不同的投影参数，因此可能学习到不同的关注模式。具体权重数值必须由输入和实际参数计算，不能只从张量形状推得。
 
@@ -329,18 +329,17 @@ class  EncoderBlock(nn.Module):
         return x
 ```
 
-EncoderBlock 依次调用自注意力和前馈网络，每个子层外面都有一条残差连接。两个模块在构造时由外部传入，因此上层可以统一创建和管理参数。需要六层时，就创建六个独立的 EncoderBlock 实例，再放进列表。
+EncoderBlock 依次调用自注意力和前馈网络，每个子层外面都有一条残差连接。两个模块在构造时由外部传入，因此上层可以统一创建和管理参数。需要六层时，就创建六个独立的 EncoderBlock 实例，再放进Modulelist。
 
-features 是特征维度，往下传给 ResidualConnection，再进 LayerNormalization。块自己不直接用它做运算，但每一层都得知道这个数，不然归一化建不出来。
+features 和 d_model 特征维度，往下传给 ResidualConnection，再进 LayerNormalization。块自己不直接用它做运算，但每一层都得知道这个数，不然归一化建不出来。
 
 这里要使用 nn.ModuleList，而不是普通 Python list。PyTorch 通过模块注册机制追踪子模块，普通列表里的模块不会自动注册，参数可能不会进入优化器，调用 .to(device) 时也不会随模型一起迁移。这类问题未必会立刻抛出异常，排查起来反而麻烦。
 
 ### 使用 lambda 适配自注意力的调用接口
 
-残差包装一次只往子层里塞一个参数，自注意力需要四个。lambda 在这里补上 query、key、value 三份输入和 mask，$qkv$ 都取自同一份 $x$，自注意力里「自」的意思就在这。编码器双向看，不需要遮未来位置，mask 只负责挡填充。
+残差包装一次只往子层里塞一个参数，但是自注意力需要四个。也就是说残差接收的这个参数是sublayer(x)——一个只带一个参数的子层，但是 attention需要至少四个参数。于是使用 lambda 在这里补上 query、key、value 三份输入和 mask，因为encoder中的注意力层是自注意力，所以$qkv$ 都取自同一份输入 $x$，自注意力里「自」的意思就在这。编码器双向看，不需要遮未来位置，mask 只负责挡填充。而由于残差连接接受的是一个层所以不需要在 $FFN$ 加上 (x) 残差连接在处理时会自动把 $x$ 放进去
 
-lambda 里的 $x$ 和外层的 $x$ 同名，换成 functools.partial 也行，或者给残差包装多接几个参数。写法本身没关系，读代码的人能一眼看出这里在做什么就行。
-
+lambda 里的 $x$ 和外层的 $x$ 同名，换成 functools.partial 也行，或者给残差包装多接几个参数。
 ### EncoderBlock 的前向计算流程
 
 ![编码器块的两条残差支路](../../assets/images/transformer-example/step7-encoder-block.png)
@@ -385,10 +384,6 @@ class Encoder(nn.Module):
 
 调试先拿两层跑通。编码器不改序列长度，[batch, seq_len, d_model] 进去再原样出来，这句可以写成断言挂在 forward 里，接解码器的时候能早一步发现形状对不上。
 
-### 编码器输出的形状与语义
-
-从查表到归一化，每一步都停在同一句话上。序列长度、维度、位置编码的形状，全部保持着同一个约定。这套约定到了解码器那边照样成立，只是注意力从一次变成两次，mask 也随之分岔。
-
 ## 解码器
 
 Decoder 和 Encoder 都由重复堆叠的 block 与负责管理层数的容器组成。DecoderBlock 多出交叉注意力这一层，输入来源也随之变化。先看单层，再看堆叠容器。
@@ -411,11 +406,9 @@ class DecoderBlock(nn.Module):
         return x
 ```
 
-三个子层，每个都套一层残差，ModuleList 里也就有三个元素。自注意力的 $qkv$ 全部取自解码器输入，交叉注意力的 $q$ 取自解码器、$k$ 和 $v$ 取自编码器输出，前馈层和编码器里那个完全一样。
+三个子层，每个都套一层残差，ModuleList 里也就有三个元素。自注意力的 $qkv$ 全部取自解码器输入，交叉注意力的 $q$ 取自解码器的$x$、$k$ 和 $v$ 取自编码器输出，前馈层和编码器里的完全一样。
 
 forward 的参数比编码器块多了一个 encoder_output。src_mask 和 tgt_mask 也分开传，第一个管源句的填充位，第二个管目标句的填充位和未来位置。
-
-features 还是那句老话，用来建三层残差里的归一化，块自己不做维度运算。
 
 ### 交叉注意力如何融合源序列信息
 
