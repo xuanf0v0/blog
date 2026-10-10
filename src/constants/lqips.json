@@ -18,5 +18,17 @@
   "src:assets/images/MobileWallpaper/m1.avif": "cccce0cbc0d59294c0",
   "public:assets/images/sponsor/wechat.png": "d5d5d5dad9d7dbd8cf",
   "public:assets/images/sponsor/alipay.png": "8ebbde91bedf93c0e0",
-  "public:assets/images/ad/ad1.webp": "a1b8b68a8e918c8f93"
+  "public:assets/images/ad/ad1.webp": "a1b8b68a8e918c8f93",
+  "src:assets/images/transformer-example/step9-decoder-block.png": "f9fbfbfbfcfcfcfbfb",
+  "src:assets/images/transformer-example/step8-encoder.png": "f9f9faf9f9fafcfcfc",
+  "src:assets/images/transformer-example/step7-encoder-block.png": "fbfbfbfafbfbfdfdfd",
+  "src:assets/images/transformer-example/step6-multi-head-attention.png": "f8f9fae7eff5dbe9f4",
+  "src:assets/images/transformer-example/step5-residual-connection.png": "fafbfbfafafbfcfcfc",
+  "src:assets/images/transformer-example/step4-feed-forward.png": "f9fafbf9fafaf9fafb",
+  "src:assets/images/transformer-example/step3-layer-normalization.png": "f9f9fafafbfbfdfdfd",
+  "src:assets/images/transformer-example/step2-positional-encoding.png": "fafafafafafafbfbfc",
+  "src:assets/images/transformer-example/step12-transformer.png": "fafafbf7f8fcfcfcfc",
+  "src:assets/images/transformer-example/step11-projection-layer.png": "fbfafafbfaf8fcfcfb",
+  "src:assets/images/transformer-example/step10-decoder.png": "f7f9fbf9fafcfbfcfc",
+  "src:assets/images/transformer-example/step1-input-embedding.png": "fbfbfcfafafbfbfbfb"
 }
