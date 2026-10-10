@@ -12,7 +12,7 @@ export const siteConfig: SiteConfig = {
 	subtitle: "记录技术与生活",
 
 	// 站点 URL
-	site_url: "https://example.com",
+	site_url: "https://xuanf0v0.github.io",
 
 	// 站点描述
 	description: "技术、写作、工具与日常思考的个人博客。",

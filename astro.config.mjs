@@ -53,11 +53,15 @@ const adapter = process.env.CF_WORKERS
 		})
 	: undefined;
 
+// GitHub Pages 项目页部署：仓库名为 blog，站点落在 /blog 子路径。
+// 工作流以 GITHUB_PAGES=true 构建；其它目标（Vercel 等）保持根路径不变。
+const base = process.env.GITHUB_PAGES === "true" ? "/blog" : "/";
+
 // https://astro.build/config
 export default defineConfig({
 	site: siteConfig.site_url,
 
-	base: "/",
+	base,
 	trailingSlash: "always",
 
 	// 字体配置 - 只加载实际使用的字体，跳过未引用的以加快构建
