@@ -30,5 +30,9 @@
   "src:assets/images/transformer-example/step12-transformer.png": "fafafbf7f8fcfcfcfc",
   "src:assets/images/transformer-example/step11-projection-layer.png": "fbfafafbfaf8fcfcfb",
   "src:assets/images/transformer-example/step10-decoder.png": "f7f9fbf9fafcfbfcfc",
-  "src:assets/images/transformer-example/step1-input-embedding.png": "fbfbfcfafafbfbfbfb"
+  "src:assets/images/transformer-example/step1-input-embedding.png": "fbfbfcfafafbfbfbfb",
+  "src:assets/images/rope-example/rope-yarn.png": "f0f1f1f2f3f3f8f8f9",
+  "src:assets/images/rope-example/rope-rotation.png": "eff0f0ebeeeefafbfb",
+  "src:assets/images/rope-example/rope-freqs.png": "f2f4f5f6f6f7fafafa",
+  "src:assets/images/rope-example/rope-cos-sin.png": "b9939edfced0dbc9cc"
 }

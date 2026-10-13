@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RoPE 交互演示：Token、频率与旋转</title>
+<style>
+  :root { color-scheme: light; --ink:#172033; --muted:#667085; --line:#dce3ec; --blue:#2563eb; --orange:#ea580c; --green:#15803d; --panel:#ffffff; --bg:#f4f7fb; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--ink); background:var(--bg); line-height:1.5; }
+  main { max-width:1100px; margin:0 auto; padding:24px 18px 40px; }
+  h1 { font-size:clamp(1.5rem,3vw,2.15rem); margin:0 0 8px; }
+  h2 { font-size:1.08rem; margin:0 0 14px; }
+  p { margin:8px 0; }
+  .lead { color:var(--muted); margin-bottom:20px; }
+  .grid { display:grid; grid-template-columns: minmax(280px, .85fr) minmax(320px, 1.15fr); gap:16px; align-items:stretch; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:18px; box-shadow:0 3px 12px rgba(20,35,60,.04); }
+  .controls { display:grid; gap:18px; }
+  .control-head { display:flex; justify-content:space-between; gap:12px; align-items:baseline; }
+  .value { font-weight:750; font-variant-numeric:tabular-nums; }
+  input[type=range] { width:100%; accent-color:var(--blue); cursor:pointer; }
+  .hint { font-size:.9rem; color:var(--muted); }
+  .buttons { display:flex; gap:8px; flex-wrap:wrap; }
+  button { border:1px solid var(--line); background:#fff; padding:9px 13px; border-radius:10px; cursor:pointer; color:var(--ink); font-weight:600; }
+  button.primary { background:var(--blue); color:#fff; border-color:var(--blue); }
+  button:hover { filter:brightness(.97); }
+  .stats { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:14px; }
+  .stat { border:1px solid var(--line); border-radius:12px; padding:12px; background:#fbfcfe; }
+  .stat .label { font-size:.82rem; color:var(--muted); }
+  .stat .num { font-size:1.25rem; font-weight:750; margin-top:3px; font-variant-numeric:tabular-nums; }
+  canvas { width:100%; height:auto; display:block; border-radius:12px; background:#fbfdff; border:1px solid var(--line); }
+  .wide { margin-top:16px; }
+  .formula { background:#f0f5ff; border:1px solid #c9d9ff; padding:12px 14px; border-radius:12px; overflow-wrap:anywhere; }
+  code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .legend { display:flex; gap:14px; flex-wrap:wrap; color:var(--muted); font-size:.88rem; margin:10px 0 0; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:5px; }
+  .table-wrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:.92rem; }
+  th,td { text-align:right; border-bottom:1px solid var(--line); padding:9px 8px; white-space:nowrap; }
+  th:first-child,td:first-child { text-align:left; }
+  th { color:var(--muted); font-weight:650; }
+  tr.active { background:#eff6ff; font-weight:700; }
+  .takeaway { border-left:4px solid var(--blue); padding:10px 14px; background:#f0f5ff; border-radius:0 10px 10px 0; }
+  @media(max-width:760px) { .grid { grid-template-columns:1fr; } main { padding:18px 12px 28px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>RoPE：Token 位置、频率与向量旋转</h1>
+  <p class="lead">拖动 Token 位置，观察同一对维度上的频率是否变化、角度如何累积，以及向量在二维平面中如何转动。</p>
+
+  <div class="grid">
+    <section class="card controls">
+      <h2>控制实验</h2>
+      <div>
+        <div class="control-head"><label for="pos">Token 位置 p</label><span class="value" id="posVal">12</span></div>
+        <input id="pos" type="range" min="0" max="200" step="1" value="12">
+        <div class="hint">位置每增加 1，角度就增加一个固定的频率值 ω。</div>
+      </div>
+      <div>
+        <div class="control-head"><label for="freq">选择频率 ω（弧度 / Token）</label><span class="value" id="freqVal">0.1</span></div>
+        <input id="freq" type="range" min="0.01" max="1" step="0.01" value="0.1">
+        <div class="hint">这是当前选定维度对的频率。改变它，相当于切换到不同频率的维度对（或修改频率设置）。</div>
+      </div>
+      <div class="buttons">
+        <button class="primary" id="play">▶ 自动增加位置</button>
+        <button id="step">位置 +1</button>
+        <button id="reset">重置位置</button>
+        <button id="examples">查看三种频率</button>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="label">当前频率（不随 p 变化）</div><div class="num" id="sFreq">0.100</div></div>
+        <div class="stat"><div class="label">当前旋转角度（模一圈显示）</div><div class="num" id="sAngle">68.8°</div></div>
+        <div class="stat"><div class="label">每个 Token 增加的角度</div><div class="num" id="sStep">5.73°</div></div>
+        <div class="stat"><div class="label">转完一整圈所需位置间隔</div><div class="num" id="sPeriod">62.83</div></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>二维向量正在怎样旋转？</h2>
+      <canvas id="wheel" width="600" height="420" aria-label="二维向量旋转图"></canvas>
+      <div class="legend">
+        <span><i class="dot" style="background:#2563eb"></i>当前向量</span>
+        <span><i class="dot" style="background:#ea580c"></i>角度弧线</span>
+        <span><i class="dot" style="background:#98a2b3"></i>坐标轴</span>
+      </div>
+      <p class="hint">图中向量长度保持为 1；RoPE 改变的是它的方向。真实模型中，旋转作用于 Q、K 向量对应的维度对。</p>
+    </section>
+  </div>
+
+  <section class="card wide">
+    <h2>随 Token 位置变化：频率不变，角度递增</h2>
+    <canvas id="plot" width="1000" height="300" aria-label="位置和角度关系图"></canvas>
+    <p class="hint">蓝线表示未取模的角度 φ = pω，因此会持续上升；橙色虚线标出每转一圈的 2π、4π……。旋转方向由角度对 2π 取模后的结果决定。</p>
+  </section>
+
+  <section class="card wide">
+    <h2>附近几个 Token 的数值</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Token 位置 p</th><th>频率 ω</th><th>累计角度 pω（弧度）</th><th>显示角度（0°–360°）</th><th>相对前一位置的角度增量</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card wide">
+    <h2>把“转一圈”说准确</h2>
+    <div class="formula"><strong>旋转角度：</strong> φ<sub>p</sub> = pω　　<strong>一圈对应的位置间隔：</strong> T = 2π / ω</div>
+    <p id="explain"></p>
+    <p class="takeaway"><strong>最重要的结论：</strong>固定同一对维度时，ω 不会因为 Token 位置 p 增加而改变；每向后移动一个位置，角度固定增加 ω。频率越高，单位位置转得越多，完成一整圈所需的位置间隔就越少。</p>
+  </section>
+</main>
+<script>
+(() => {
+  const pos = document.getElementById('pos');
+  const freq = document.getElementById('freq');
+  const posVal = document.getElementById('posVal');
+  const freqVal = document.getElementById('freqVal');
+  const sFreq = document.getElementById('sFreq');
+  const sAngle = document.getElementById('sAngle');
+  const sStep = document.getElementById('sStep');
+  const sPeriod = document.getElementById('sPeriod');
+  const rows = document.getElementById('rows');
+  const explain = document.getElementById('explain');
+  const wheel = document.getElementById('wheel');
+  const plot = document.getElementById('plot');
+  const ctx = wheel.getContext('2d');
+  const pctx = plot.getContext('2d');
+  const playBtn = document.getElementById('play');
+  let timer = null;
+
+  const fmt = (n, d=3) => Number(n).toFixed(d);
+  const deg = rad => rad * 180 / Math.PI;
+  const mod = (n, m) => ((n % m) + m) % m;
+
+  function drawWheel(p, w) {
+    const W = wheel.width, H = wheel.height;
+    ctx.clearRect(0,0,W,H);
+    const cx = W/2, cy = H/2 + 8, r = Math.min(W*0.34,H*0.36);
+    ctx.strokeStyle = '#e5eaf2'; ctx.lineWidth = 1;
+    for (let k=1;k<=4;k++) { ctx.beginPath(); ctx.arc(cx,cy,r*k/4,0,Math.PI*2); ctx.stroke(); }
+    ctx.strokeStyle = '#98a2b3'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(cx-r-25,cy); ctx.lineTo(cx+r+25,cy); ctx.moveTo(cx,cy-r-25); ctx.lineTo(cx,cy+r+25); ctx.stroke();
+    ctx.fillStyle='#667085'; ctx.font='14px system-ui'; ctx.fillText('x',cx+r+32,cy+5); ctx.fillText('y',cx+7,cy-r-30);
+    ctx.strokeStyle='#ea580c'; ctx.lineWidth=4; ctx.beginPath(); ctx.arc(cx,cy,r*0.72,-mod(p*w,Math.PI*2),0,false); ctx.stroke();
+    const a = mod(p*w,Math.PI*2);
+    const x = cx + r*Math.cos(a), y = cy - r*Math.sin(a);
+    ctx.strokeStyle='#2563eb'; ctx.lineWidth=5; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(x,y); ctx.stroke();
+    ctx.fillStyle='#2563eb'; ctx.beginPath(); ctx.arc(x,y,7,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#172033'; ctx.font='bold 17px system-ui';
+    ctx.fillText(`φ = ${fmt(p*w,3)} rad`,18,28);
+    ctx.font='14px system-ui'; ctx.fillStyle='#667085';
+    ctx.fillText(`显示方向：${fmt(deg(a),1)}°`,18,51);
+    ctx.fillText(`位置 p = ${p}；ω = ${fmt(w,3)}`,18,H-18);
+    // Show one full circle guide
+    ctx.setLineDash([5,5]); ctx.strokeStyle='#d0d7e2'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  function drawPlot(p,w) {
+    const W=plot.width,H=plot.height, L=62,R=24,T=24,B=43;
+    pctx.clearRect(0,0,W,H);
+    const maxP=Math.max(20,Math.min(200,Math.max(p+8,40)));
+    const maxAngle=Math.max(2*Math.PI, maxP*w);
+    const top=Math.ceil(maxAngle/(Math.PI*2))*Math.PI*2 || 2*Math.PI;
+    const x=v=>L+v/maxP*(W-L-R);
+    const y=v=>H-B-v/top*(H-T-B);
+    pctx.font='13px system-ui'; pctx.fillStyle='#667085'; pctx.strokeStyle='#e1e7ef'; pctx.lineWidth=1;
+    for(let j=0;j<=4;j++){
+      const a=top*j/4, yy=y(a);
+      pctx.beginPath();pctx.moveTo(L,yy);pctx.lineTo(W-R,yy);pctx.stroke();
+      pctx.fillText(`${fmt(a,1)}`,8,yy+4);
+    }
+    pctx.beginPath();pctx.moveTo(L,T);pctx.lineTo(L,H-B);pctx.lineTo(W-R,H-B);pctx.strokeStyle='#98a2b3';pctx.stroke();
+    pctx.fillText('累计角度（弧度）',L,15); pctx.fillText('Token 位置 p',W-R-110,H-10);
+    // full-turn guides
+    pctx.setLineDash([6,5]); pctx.strokeStyle='#ea580c';
+    for(let a=2*Math.PI;a<=top;a+=2*Math.PI){pctx.beginPath();pctx.moveTo(L,y(a));pctx.lineTo(W-R,y(a));pctx.stroke();}
+    pctx.setLineDash([]);
+    pctx.strokeStyle='#2563eb';pctx.lineWidth=3;pctx.beginPath();
+    for(let i=0;i<=maxP;i++){const xx=x(i), yy=y(i*w); if(i===0)pctx.moveTo(xx,yy);else pctx.lineTo(xx,yy);}
+    pctx.stroke();
+    pctx.fillStyle='#2563eb';pctx.beginPath();pctx.arc(x(p),y(p*w),6,0,Math.PI*2);pctx.fill();
+    pctx.fillStyle='#172033';pctx.font='bold 13px system-ui';pctx.fillText(`当前：p=${p}, φ=${fmt(p*w,3)} rad`,Math.min(x(p)+10,W-190),Math.max(y(p*w)-12,T+12));
+  }
+
+  function update() {
+    const p=Number(pos.value), w=Number(freq.value), a=mod(p*w,2*Math.PI), period=2*Math.PI/w;
+    posVal.textContent=p; freqVal.textContent=fmt(w,2);
+    sFreq.textContent=fmt(w,3); sAngle.textContent=`${fmt(deg(a),1)}°`;
+    sStep.textContent=`${fmt(deg(w),2)}°`; sPeriod.textContent=fmt(period,2);
+    drawWheel(p,w); drawPlot(p,w);
+    rows.innerHTML='';
+    const start=Math.max(0,p-3), end=Math.min(200,p+3);
+    for(let n=start;n<=end;n++){
+      const tr=document.createElement('tr'); if(n===p)tr.className='active';
+      const increment=n===0?'—':`${fmt(w,3)} rad (${fmt(deg(w),2)}°)`;
+      tr.innerHTML=`<td>${n}${n===p?' ← 当前':''}</td><td>${fmt(w,3)}</td><td>${fmt(n*w,4)}</td><td>${fmt(deg(mod(n*w,2*Math.PI)),2)}°</td><td>${increment}</td>`;
+      rows.appendChild(tr);
+    }
+    const turns=p*w/(2*Math.PI);
+    explain.textContent=`现在 p = ${p}、ω = ${fmt(w,3)}。未取模的累计角度是 ${fmt(p*w,3)} 弧度，约为 ${fmt(turns,3)} 圈；向量图显示的是去掉完整圈数后的方向。频率保持 ${fmt(w,3)} 不变时，每个位置间隔始终增加 ${fmt(w,3)} 弧度（${fmt(deg(w),2)}°）。按连续位置间隔计算，一圈需要 2π/ω ≈ ${fmt(period,2)} 个位置间隔。`;
+  }
+
+  pos.addEventListener('input',update);
+  freq.addEventListener('input',update);
+  document.getElementById('step').addEventListener('click',()=>{pos.value=Math.min(200,Number(pos.value)+1);update();});
+  document.getElementById('reset').addEventListener('click',()=>{pos.value=0;stop();update();});
+  document.getElementById('examples').addEventListener('click',()=>{
+    stop();
+    const choices=[0.5,0.1,0.02];
+    const w=Number(freq.value);
+    const next=choices.find(v=>v < w-0.005) ?? choices[0];
+    freq.value=String(next); update();
+  });
+  function stop(){if(timer!==null){clearInterval(timer);timer=null;}playBtn.textContent='▶ 自动增加位置';playBtn.classList.add('primary');}
+  playBtn.addEventListener('click',()=>{
+    if(timer!==null){stop();return;}
+    playBtn.textContent='Ⅱ 暂停'; playBtn.classList.remove('primary');
+    timer=setInterval(()=>{let p=Number(pos.value); if(p>=200){stop();return;}pos.value=p+1;update();},160);
+  });
+  update();
+})();
+</script>
+</body>
+</html>
