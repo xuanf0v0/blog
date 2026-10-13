@@ -201,30 +201,22 @@ export default defineConfig({
 		svelte(),
 		sitemap({
 			filter: (page) => {
-				// 根据页面开关配置过滤sitemap
+				// 根据页面开关配置过滤sitemap（含 /gallery/<album>/ 这类子路径）
 				const url = new URL(page);
 				const pathname = url.pathname;
 
-				if (pathname === "/friends/" && !siteConfig.pages.friends) {
-					return false;
-				}
-				if (pathname === "/sponsor/" && !siteConfig.pages.sponsor) {
-					return false;
-				}
-				if (pathname === "/guestbook/" && !siteConfig.pages.guestbook) {
-					return false;
-				}
-				if (pathname === "/bangumi/" && !siteConfig.pages.bangumi) {
-					return false;
-				}
-				if (pathname === "/gallery/" && !siteConfig.pages.gallery) {
-					return false;
-				}
-				if (pathname === "/anime/" && !siteConfig.pages.anime) {
-					return false;
-				}
+				const pageToggles = [
+					["/friends/", siteConfig.pages.friends],
+					["/sponsor/", siteConfig.pages.sponsor],
+					["/guestbook/", siteConfig.pages.guestbook],
+					["/bangumi/", siteConfig.pages.bangumi],
+					["/gallery/", siteConfig.pages.gallery],
+					["/anime/", siteConfig.pages.anime],
+				];
 
-				return true;
+				return !pageToggles.some(
+					([base, enabled]) => !enabled && pathname.startsWith(base),
+				);
 			},
 		}),
 		mdx(),
