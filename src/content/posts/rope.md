@@ -207,10 +207,11 @@ k_embed = ((k * cos.unsqueeze(unsqueeze_dim)) + (rotate_half(k) * sin.unsqueeze(
 对于每个 \(q\) 和 \(k\) Token，执行：
 
 \[
+\begin{aligned}
 q_m^{\text{rot}}
-=
-q_m\odot\cos_m+
+&=q_m\odot\cos_m+
 \operatorname{rotate\_half}(q_m)\odot\sin_m
+\end{aligned}
 \]
 
 至此，\(q\) 和 \(k\) 就带上位置信息了。
