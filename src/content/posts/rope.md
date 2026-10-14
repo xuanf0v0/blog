@@ -66,7 +66,7 @@ freqs = 1.0 / (
 
 其中，`dim` 表示这段代码所处理的旋转维度，`rope_base` 是频率基数，通常记为 \(\theta\)。
 
-代码中的 `torch.arange(0, dim, 2)` 每隔两个维度取一个索引。对于偶数维度 \(d\)，它会生成：
+代码中的 `torch.arange(0, dim, 2)` 每隔两个维度取一个索引，对应的就是 2i 。对于偶数维度 \(d\)，它会生成：
 
 $$
 0,2,4,\ldots,d-2
@@ -110,11 +110,15 @@ $$
 于是，同一个注意力头中的不同维度对会获得不同的旋转频率。
 
 
-值得注意的是所有token共享同一张频率表
----
+```
+这里计算出来的 inv_freqs 是所有 token 都共享的同一张频率表
+```
 
 ---
 
+## 接着计算每个位置的旋转角度
+
+我们有了 token 对所对应的旋转频率表之后，我们来计算一下不同token位置的实际旋转角度。
 对于token的位置 \(p\)，第 \(i\) 个频率对应的旋转角度为：
 
 $$
@@ -146,11 +150,72 @@ $$
 \end{aligned}
 $$
 
+接下来我们来看代码：
+```python
+t = torch.arange(end).float()
+freqs = torch.outer(t, inv_freq)
+```
+代码首先生成一段从 0 到 end-1 的索引 \( i \)
+然后根据公式计算出一个旋转角度表：行对应 Token 位置，列对应不同的维度对。
 
-因此，在**同一个频率**，只要两个 Token 的位置距离相同，它们的角度差就相同。例如，位置 \(0\) 与位置 \(1\) 的角度差，和位置 \(10\) 与位置 \(11\) 的角度差都是 \(\omega_i\)。
+有了每个 token 的不同维度对的旋转角度表后，我们就可以将这个表作用到 \(q\)，\(k\) 向量上。
 
-如果换到另一个频率维度，角度差就可能不同。这是因为不同维度对使用不同的 \(\omega_i\)。
+## 对角度求 cos 和 sin
 
+在正式计算之前有一个前置知识。
+我们想把一个向量旋转任意角度 \(\theta\)，而旋转后的向量恰好可以用「原向量」和「与原向量垂直的向量」组合出来
+
+![原向量决定原来的方向，垂直向量提供旋转所需的另一个方向。](../../assets/images/rope-example/rope-rotate.jpeg)
+
+现在我们想把它逆时针旋转角度 \(\theta\)，得到新向量 \(\mathbf{x}'\)。
+对于旋转角度 \(\theta\)，恰好有：
+\[
+\mathbf{x}'=\cos\theta\,\mathbf{x}
++\sin\theta\,\mathbf{x}_{\perp}
+\]
+
+我们回到代码上
+```python
+def rotate_half(x):
+    return torch.cat(
+        (-x[..., x.shape[-1] // 2:],
+          x[..., :x.shape[-1] // 2]),
+        dim=-1
+    )
+```
+\(rotate\_half\) 计算的是 \(\mathbf{x}_{\perp}\) 假设 \(x\) 为
+\[a, b, c, d\]
+将 \(x\) 旋转 90 度这相当于同时构造两组垂直方向：
+\[
+(a,c)\longrightarrow(-c,a)
+\]
+
+\[
+(b,d)\longrightarrow(-d,b)
+\]
+于是 \(\mathbf{x}_{\perp}\) 就变等于
+\[
+-c, -d, a, b
+\]
+
+现在有了 \(x\) 在水平方向和垂直方向的分量之后，我们将得到的旋转角度表作用到 \(q\) \(k\) 上。
+
+```python
+q_embed = ((q * cos.unsqueeze(unsqueeze_dim)) + (rotate_half(q) * sin.unsqueeze(unsqueeze_dim))).to(q.dtype)
+k_embed = ((k * cos.unsqueeze(unsqueeze_dim)) + (rotate_half(k) * sin.unsqueeze(unsqueeze_dim))).to(k.dtype)
+```
+对于每个 \(q\) 和 \(k\) Token，执行：
+
+\[
+q_m^{\text{rot}}
+=
+q_m\odot\cos_m+
+\operatorname{rotate\_half}(q_m)\odot\sin_m
+\]
+
+至此，\(q\) 和 \(k\) 就带上位置信息了。
+
+---
 频率与完整旋转周期之间的关系为：
 
 $$
@@ -168,11 +233,12 @@ $$
 
 这里的 \(N_i\) 表示该频率在整个上下文范围内经历的圈数。位置越远，某个频率对应的累计相位通常越大。
 
+```
 不同频率共同作用，让 RoPE 能够表达从局部位置变化到较大位置跨度的多种尺度。
-
+```
 ![基础频率随频率索引的变化](../../assets/images/rope-example/rope-freqs.png)
 
-## 下一步使用yarn进行外推
+## Yarn
 
 ### 当推理长度超出原始上下文时
 
@@ -251,12 +317,11 @@ inv_dim = lambda b: (
 
 它的作用是根据参考圈数 \(b\)，反推出对应的频率索引位置。
 
-为什么可以这样计算？
 
 在原始上下文长度 \(L\) 内，一个频率经历的旋转圈数近似为：
 
 $$
-b=\frac{L\omega_i}{2\pi}
+{L\omega_i}={2\pi}b
 $$
 
 将基础频率公式代入：
@@ -289,7 +354,7 @@ $$
 
 这就是 `inv_dim(b)` 对应的数学表达式。
 
-这里的 \(b\) 表示频率在**原始上下文范围**内的参考旋转圈数。`inv_dim` 也不是在计算旋转角度，而是在频率索引轴上定位参考边界。
+这里的 \(b\) 表示频率在**原始上下文范围**内的参考旋转圈数。
 
 ### 2. 通过 `low` 和 `high` 确定过渡区域
 

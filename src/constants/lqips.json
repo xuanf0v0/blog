@@ -34,5 +34,7 @@
   "src:assets/images/rope-example/rope-yarn.png": "f0f1f1f2f3f3f8f8f9",
   "src:assets/images/rope-example/rope-rotation.png": "eff0f0ebeeeefafbfb",
   "src:assets/images/rope-example/rope-freqs.png": "f2f4f5f6f6f7fafafa",
-  "src:assets/images/rope-example/rope-cos-sin.png": "b9939edfced0dbc9cc"
+  "src:assets/images/rope-example/rope-cos-sin.png": "b9939edfced0dbc9cc",
+  "src:content/posts/image.png": "fbfbfbfdfdfdf7f7f7",
+  "src:assets/images/rope-example/rope-rotate.jpeg": "fbfbfbfdfdfdf7f7f7"
 }
